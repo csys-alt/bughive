@@ -1,0 +1,17 @@
+[
+  {
+    "name": "quote",
+    "category": "motivational",
+    "script": "motivational_quote.dart"
+  },
+  {
+    "name": "current_time",
+    "category": "app",
+    "script": "current_time.dart"
+  },
+  {
+    "name": "download_fonts",
+    "category": "app",
+    "script": "download_fonts.dart"
+  }
+]

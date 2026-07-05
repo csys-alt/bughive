@@ -1,0 +1,49 @@
+name: bughive
+description: A mobile-first engineering logbook for developers and QA engineers.
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  google_fonts: ^8.1.0
+  analyzer: ^13.0.0
+  intl: ^0.20.2
+  nylo_framework: ^7.1.24
+  supabase_flutter: ^2.15.4
+  cupertino_icons: ^1.0.9
+  file_picker: ^12.0.0-beta.7
+  font_awesome_flutter: ^11.0.0
+  url_launcher: ^6.3.2
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.4
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+# APP ICON - public/app_icon/icon.png
+# Build icons: "dart run flutter_launcher_icons"
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/app_icon/icon.png"
+  remove_alpha_ios: true
+
+flutter:
+
+
+  uses-material-design: true
+
+  assets:
+    - assets/fonts/
+    - assets/images/
+    - assets/app_icon/
+    - lang/

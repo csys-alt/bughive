@@ -1,0 +1,127 @@
+import '/app/controllers/github_controller.dart';
+import 'package:flutter/material.dart';
+import 'package:nylo_framework/nylo_framework.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+class AddRepositoryPage extends NyStatefulWidget<GithubController> {
+  static RouteView path = ("/repositories/add", (_) => AddRepositoryPage());
+
+  AddRepositoryPage({super.key})
+    : super(child: () => _AddRepositoryPageState());
+}
+
+class _AddRepositoryPageState extends NyPage<AddRepositoryPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _urlController = TextEditingController();
+
+  bool _saving = false;
+  String? _error;
+
+  @override
+  LoadingStyle get loadingStyle => LoadingStyle.none();
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+
+    try {
+      await widget.controller.addRepository(_urlController.text);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.toString();
+        _saving = false;
+      });
+    }
+  }
+
+  Future<void> _openGithubRepositories() async {
+    try {
+      final url = await widget.controller.repositoriesPageUrl();
+      final opened = await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened && mounted) {
+        setState(() => _error = "Could not open GitHub repositories.");
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = error.toString());
+    }
+  }
+
+  @override
+  Widget view(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Add Repository")),
+      body: SafeArea(
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              TextFormField(
+                controller: _urlController,
+                keyboardType: TextInputType.url,
+                textInputAction: TextInputAction.done,
+                decoration: const InputDecoration(
+                  labelText: "GitHub Repository URL",
+                  hintText: "github.com/user/project",
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return "Repository URL is required";
+                  }
+                  return null;
+                },
+                onFieldSubmitted: (_) => _submit(),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _saving ? null : _openGithubRepositories,
+                icon: const Icon(Icons.open_in_new, size: 18),
+                label: const Text("Open my GitHub repositories"),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _saving ? null : _submit,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.add, size: 18),
+                label: const Text("Add Repository"),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 16),
+                Text(
+                  _error!,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFFFF9A9A),
+                    letterSpacing: 0,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

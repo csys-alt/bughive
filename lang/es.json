@@ -1,0 +1,40 @@
+{
+  "nylo": {
+    "form_picker": {
+      "clear": "Limpiar",
+      "select": "Seleccionar"
+    },
+    "journey": {
+      "of": "de",
+      "step": "Paso",
+      "back": "Atrás",
+      "next": "Siguiente",
+      "finish": "Finalizar"
+    },
+    "language_switcher": {
+      "title": "Selecciona tu idioma"
+    },
+    "collection_view": {
+      "no_results": "No se encontraron resultados",
+      "pull_up": "Tire hacia arriba para cargar",
+      "failed": "Error al cargar más resultados",
+      "release": "Suelte para cargar más"
+    },
+    "confirm_action": {
+      "cancel": "Cancelar",
+      "confirm": "Sí"
+    },
+    "page_not_found": {
+      "title": "Página no encontrada",
+      "message": "Lo sentimos, la página que ha solicitado no está disponible.",
+      "go_back": "Volver"
+    },
+    "offline_banner": {
+      "message": "Sin conexión a internet"
+    }
+  },
+  "documentation": "documentación",
+  "changelog": "registro de cambios",
+  "micro-framework for Flutter": "micro-framework para Flutter",
+  "hello": "hola {{name}}"
+}

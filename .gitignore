@@ -1,0 +1,43 @@
+# OS
+.DS_Store
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Dart / Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+.pub-cache/
+build/
+**/doc/api/
+lib/generated_plugin_registrant.dart
+
+# Android
+android/app/.cxx/
+
+# iOS
+ios/build/
+
+# Generated app config
+.env
+lib/bootstrap/env.g.dart
+
+# Logs and temporary files
+*.log
+*.swp
+*.class
+*.pyc
+
+# Project-specific local files
+CLAUDE.md
+.claude
+.agent
+SKILL.md
+TASK.md
