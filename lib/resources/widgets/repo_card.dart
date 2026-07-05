@@ -103,10 +103,7 @@ class RepoCard extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        TimeMetaText(
-          createdAt: repository.createdAt,
-          syncAt: repository.lastSync,
-        ),
+        TimeMetaText(syncAt: repository.lastSync),
       ],
     );
   }

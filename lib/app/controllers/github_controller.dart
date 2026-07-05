@@ -168,6 +168,7 @@ class GithubController extends Controller {
     required Repository repository,
     required EngineeringLog log,
     String stateReason = "completed",
+    bool markFinished = true,
   }) async {
     final issueNumber = log.githubIssueNumber;
     if (issueNumber == null) {
@@ -185,6 +186,7 @@ class GithubController extends Controller {
       accessToken: accessToken,
       stateReason: stateReason,
     );
+    if (!markFinished) return log;
     return _supabaseService.markLogFinished(log);
   }
 

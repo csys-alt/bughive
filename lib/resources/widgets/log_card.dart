@@ -87,7 +87,6 @@ class LogCard extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         TimeMetaText(
-          createdAt: log.createdAt,
           syncAt: log.isSynced ? log.updatedAt : null,
           neverLabel: "Not synced",
         ),

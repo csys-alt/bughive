@@ -3,13 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 class TimeMetaText extends StatefulWidget {
-  final DateTime? createdAt;
   final DateTime? syncAt;
   final String neverLabel;
 
   const TimeMetaText({
     super.key,
-    required this.createdAt,
     required this.syncAt,
     this.neverLabel = "Never synced",
   });
@@ -40,7 +38,7 @@ class _TimeMetaTextState extends State<TimeMetaText> {
   @override
   Widget build(BuildContext context) {
     return Text(
-      "${_fixedDate(widget.createdAt)} - ${_relative(widget.syncAt)}",
+      _relative(widget.syncAt),
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
         color: const Color(0xFFB8B5B0),
         fontWeight: FontWeight.w700,
@@ -49,41 +47,13 @@ class _TimeMetaTextState extends State<TimeMetaText> {
     );
   }
 
-  String _fixedDate(DateTime? date) {
-    if (date == null) return "NO DATE";
-    const months = [
-      "JAN",
-      "FEB",
-      "MAR",
-      "APR",
-      "MAY",
-      "JUN",
-      "JUL",
-      "AUG",
-      "SEP",
-      "OCT",
-      "NOV",
-      "DEC",
-    ];
-    final local = date.toLocal();
-    return "${local.day} ${months[local.month - 1]} ${local.year}";
-  }
-
   String _relative(DateTime? date) {
     if (date == null) return widget.neverLabel;
 
     final now = DateTime.now();
-    var difference = now.difference(date.toLocal());
-    if (difference.isNegative &&
-        difference.abs() > const Duration(minutes: 1)) {
-      final corrected = date.toLocal().subtract(now.timeZoneOffset);
-      final correctedDifference = now.difference(corrected);
-      if (!correctedDifference.isNegative) {
-        difference = correctedDifference;
-      }
-    }
+    final difference = now.difference(date.toLocal());
 
-    if (difference.inMinutes < 1) return "Just now";
+    if (difference.isNegative || difference.inMinutes < 1) return "Just now";
     if (difference.inHours < 1) {
       return _unit(difference.inMinutes, "minute");
     }

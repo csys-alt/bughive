@@ -150,6 +150,7 @@ class LogController extends Controller {
         repository: repository,
         log: log,
         stateReason: "not_planned",
+        markFinished: false,
       );
     }
     return _supabaseService.deleteEngineeringLog(log);
