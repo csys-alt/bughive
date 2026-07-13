@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+const _githubRevokeUrl = "https://github.com/settings/applications";
+
 class ProfilePage extends NyStatefulWidget<AuthController> {
   static RouteView path = ("/profile", (_) => ProfilePage());
 
@@ -30,58 +32,54 @@ class _ProfilePageState extends NyPage<ProfilePage> {
   @override
   LoadingStyle get loadingStyle => LoadingStyle.none();
 
-  Future<void> _logout() async {
+  Future<void> _deleteAccount() async {
     final confirmed = await showDialog<bool>(
       context: context,
+      builder: (context) => _DeleteAccountDialog(),
+    );
+    if (confirmed != true) return;
+    if (!mounted) return;
+
+    try {
+      await widget.controller.deleteAccount();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+      return;
+    }
+    if (!mounted) return;
+
+    routeTo(LoginPage.path, navigationType: NavigationType.pushAndForgetAll);
+
+    await showDialog<void>(
+      context: context,
       builder: (context) => AlertDialog(
-        title: const Text("Logout and clear traces?"),
+        title: const Text("Account data deleted"),
         content: const Text(
-          "This removes the saved login session from this device. GitHub will ask you to authorize again next time.",
+          "Your profile, repositories, logs, and attachments were removed "
+          "from Supabase. BugHive still has GitHub authorization on your "
+          "account until you revoke it yourself.",
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text("Cancel"),
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text("Later"),
           ),
           FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text("Logout"),
+            onPressed: () {
+              Navigator.of(context).pop();
+              launchUrl(
+                Uri.parse(_githubRevokeUrl),
+                mode: LaunchMode.externalApplication,
+              );
+            },
+            child: const Text("Revoke on GitHub"),
           ),
         ],
       ),
     );
-    if (confirmed != true) return;
-
-    await widget.controller.signOut();
-    if (!mounted) return;
-    routeTo(LoginPage.path, navigationType: NavigationType.pushAndForgetAll);
-  }
-
-  Future<void> _eraseLocalData() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Erase local data?"),
-        content: const Text(
-          "This deletes offline repositories and logs from this device.",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text("Cancel"),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text("Erase"),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    await widget.controller.eraseLocalData();
-    if (!mounted) return;
-    routeTo(LoginPage.path, navigationType: NavigationType.pushAndForgetAll);
   }
 
   Future<void> _openGithubProfile(User user) async {
@@ -171,6 +169,27 @@ class _ProfilePageState extends NyPage<ProfilePage> {
                                   ),
                                 ),
                               ],
+                              if (!widget.controller.isOfflineMode) ...[
+                                const SizedBox(height: 6),
+                                InkWell(
+                                  onTap: () =>
+                                      widget.controller.continueWithGithub(),
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 3,
+                                    ),
+                                    child: Text(
+                                      "Reconnect to GitHub",
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(
+                                            color: const Color(0xFF7FB4FF),
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -190,15 +209,9 @@ class _ProfilePageState extends NyPage<ProfilePage> {
             _DangerZone(
               children: [
                 _DangerButton(
-                  onPressed: _logout,
-                  icon: Icons.logout,
-                  label: "Logout and clear traces",
-                ),
-                const SizedBox(height: 10),
-                _DangerButton(
-                  onPressed: _eraseLocalData,
-                  icon: Icons.delete_outline,
-                  label: "Erase offline traces",
+                  onPressed: _deleteAccount,
+                  icon: Icons.delete_forever,
+                  label: "Delete account & Supabase data",
                 ),
               ],
             ),
@@ -236,6 +249,65 @@ class _ProfilePageState extends NyPage<ProfilePage> {
   }
 }
 
+class _DeleteAccountDialog extends StatefulWidget {
+  @override
+  State<_DeleteAccountDialog> createState() => _DeleteAccountDialogState();
+}
+
+class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
+  final _controller = TextEditingController();
+  bool _confirmed = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text("Delete account & Supabase data?"),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            "This permanently deletes your profile, repositories, logs, "
+            "and attachments from Supabase. This cannot be undone.",
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Type "DELETE" to confirm.',
+            style: Theme.of(context).textTheme.labelMedium,
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            decoration: const InputDecoration(border: OutlineInputBorder()),
+            onChanged: (value) =>
+                setState(() => _confirmed = value.trim() == "DELETE"),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text("Cancel"),
+        ),
+        FilledButton(
+          onPressed: _confirmed ? () => Navigator.of(context).pop(true) : null,
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFFB42318),
+          ),
+          child: const Text("Delete permanently"),
+        ),
+      ],
+    );
+  }
+}
+
 class _DangerZone extends StatelessWidget {
   final List<Widget> children;
 
@@ -262,7 +334,7 @@ class _DangerZone extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            "These actions remove local traces from this device.",
+            "This permanently deletes your account data from Database.",
             style: Theme.of(
               context,
             ).textTheme.bodySmall?.copyWith(color: const Color(0xFFE6A0A0)),

@@ -11,6 +11,17 @@ class GithubServiceException implements Exception {
   String toString() => message;
 }
 
+/// Thrown when GitHub rejects a request because the token is missing,
+/// expired, or lacks a required scope. Callers should prompt the user to
+/// reconnect their GitHub account rather than showing a raw error.
+class GithubReauthRequiredException implements Exception {
+  const GithubReauthRequiredException();
+
+  @override
+  String toString() =>
+      "Your GitHub connection needs to be refreshed. Reconnect to continue.";
+}
+
 class GithubRepositoryMetadata {
   final int githubRepoId;
   final String owner;
@@ -117,7 +128,7 @@ class GithubService {
         )?.toUtc(),
       );
     } on DioException catch (error) {
-      throw GithubServiceException(_githubError(error));
+      _throwGithubError(error);
     }
   }
 
@@ -128,7 +139,7 @@ class GithubService {
     List<String> attachmentUrls = const [],
   }) async {
     if (accessToken.isEmpty) {
-      throw const GithubServiceException("GitHub access token is missing.");
+      throw const GithubReauthRequiredException();
     }
 
     try {
@@ -146,7 +157,7 @@ class GithubService {
       if (issueNumber is int) return issueNumber;
       throw const GithubServiceException("GitHub issue number is missing.");
     } on DioException catch (error) {
-      throw GithubServiceException(_githubError(error));
+      _throwGithubError(error);
     }
   }
 
@@ -158,7 +169,7 @@ class GithubService {
     List<String> attachmentUrls = const [],
   }) async {
     if (accessToken.isEmpty) {
-      throw const GithubServiceException("GitHub access token is missing.");
+      throw const GithubReauthRequiredException();
     }
 
     try {
@@ -172,7 +183,7 @@ class GithubService {
         options: _options(accessToken),
       );
     } on DioException catch (error) {
-      throw GithubServiceException(_githubError(error));
+      _throwGithubError(error);
     }
   }
 
@@ -183,7 +194,7 @@ class GithubService {
     String stateReason = "completed",
   }) async {
     if (accessToken.isEmpty) {
-      throw const GithubServiceException("GitHub access token is missing.");
+      throw const GithubReauthRequiredException();
     }
 
     try {
@@ -193,7 +204,7 @@ class GithubService {
         options: _options(accessToken),
       );
     } on DioException catch (error) {
-      throw GithubServiceException(_githubError(error));
+      _throwGithubError(error);
     }
   }
 
@@ -202,7 +213,7 @@ class GithubService {
     required String accessToken,
   }) async {
     if (accessToken.isEmpty) {
-      throw const GithubServiceException("GitHub access token is missing.");
+      throw const GithubReauthRequiredException();
     }
 
     try {
@@ -219,7 +230,7 @@ class GithubService {
           .where((issue) => issue.number > 0)
           .toList(growable: false);
     } on DioException catch (error) {
-      throw GithubServiceException(_githubError(error));
+      _throwGithubError(error);
     }
   }
 
@@ -307,5 +318,13 @@ class GithubService {
       return data["message"].toString();
     }
     return "GitHub request failed.";
+  }
+
+  Never _throwGithubError(DioException error) {
+    final statusCode = error.response?.statusCode;
+    if (statusCode == 401 || statusCode == 403) {
+      throw const GithubReauthRequiredException();
+    }
+    throw GithubServiceException(_githubError(error));
   }
 }

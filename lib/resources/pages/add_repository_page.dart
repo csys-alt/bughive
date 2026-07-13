@@ -1,4 +1,6 @@
 import '/app/controllers/github_controller.dart';
+import '/app/services/github_service.dart';
+import '/resources/widgets/github_reconnect_banner.dart';
 import 'package:flutter/material.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -16,6 +18,7 @@ class _AddRepositoryPageState extends NyPage<AddRepositoryPage> {
 
   bool _saving = false;
   String? _error;
+  bool _reauthRequired = false;
 
   @override
   LoadingStyle get loadingStyle => LoadingStyle.none();
@@ -32,12 +35,20 @@ class _AddRepositoryPageState extends NyPage<AddRepositoryPage> {
     setState(() {
       _saving = true;
       _error = null;
+      _reauthRequired = false;
     });
 
     try {
       await widget.controller.addRepository(_urlController.text);
       if (!mounted) return;
       Navigator.of(context).pop(true);
+    } on GithubReauthRequiredException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.toString();
+        _reauthRequired = true;
+        _saving = false;
+      });
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -108,7 +119,10 @@ class _AddRepositoryPageState extends NyPage<AddRepositoryPage> {
                     : const Icon(Icons.add, size: 18),
                 label: const Text("Add Repository"),
               ),
-              if (_error != null) ...[
+              if (_reauthRequired) ...[
+                const SizedBox(height: 16),
+                const GithubReconnectBanner(),
+              ] else if (_error != null) ...[
                 const SizedBox(height: 16),
                 Text(
                   _error!,

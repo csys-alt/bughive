@@ -211,3 +211,159 @@ for update using (
 ```
 
 If login still does not open GitHub, this SQL is not the blocker. Check Supabase Auth -> Providers -> GitHub and Supabase Auth -> URL Configuration -> Redirect URLs has `bughive://auth-callback`.
+
+## Delete account data + RLS hardening
+
+Run this once. It does four things:
+
+1. **Enables account deletion** — grants `delete` on `profiles` and adds a
+   `profiles_delete_own` policy, so a signed-in user can delete their own
+   `profiles` row. The `on delete cascade` FKs then remove every
+   `repositories`/`engineering_logs`/`attachments` row that hangs off it.
+   (Without this grant, the delete button fails with a `permission denied
+   for table profiles` error.)
+2. **Scopes every policy `to authenticated`** — defense in depth so no policy
+   is ever evaluated for anonymous users.
+3. **Fixes a storage write hole** — the old storage insert/update policies
+   only checked that a path started with `logs/`, so any signed-in user
+   could write into *any* log's folder. These now verify the caller owns the
+   referenced log, and a matching delete policy is added.
+4. **Removes the broad public listing policy and pins the trigger
+   function's search_path** — public object URLs still resolve for a public
+   bucket without a `select` policy; dropping it stops clients from
+   enumerating everyone's screenshots.
+
+```sql
+-- 1. Account deletion
+grant delete on public.profiles to authenticated;
+
+-- 2. profiles policies (scoped to authenticated) + delete
+drop policy if exists "profiles_select_own" on public.profiles;
+create policy "profiles_select_own" on public.profiles
+  for select to authenticated using (id = auth.uid());
+drop policy if exists "profiles_insert_own" on public.profiles;
+create policy "profiles_insert_own" on public.profiles
+  for insert to authenticated with check (id = auth.uid());
+drop policy if exists "profiles_update_own" on public.profiles;
+create policy "profiles_update_own" on public.profiles
+  for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
+drop policy if exists "profiles_delete_own" on public.profiles;
+create policy "profiles_delete_own" on public.profiles
+  for delete to authenticated using (id = auth.uid());
+
+-- repositories
+drop policy if exists "repositories_select_own" on public.repositories;
+create policy "repositories_select_own" on public.repositories
+  for select to authenticated using (user_id = auth.uid());
+drop policy if exists "repositories_insert_own" on public.repositories;
+create policy "repositories_insert_own" on public.repositories
+  for insert to authenticated with check (user_id = auth.uid());
+drop policy if exists "repositories_update_own" on public.repositories;
+create policy "repositories_update_own" on public.repositories
+  for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists "repositories_delete_own" on public.repositories;
+create policy "repositories_delete_own" on public.repositories
+  for delete to authenticated using (user_id = auth.uid());
+
+-- engineering_logs
+drop policy if exists "engineering_logs_select_own" on public.engineering_logs;
+create policy "engineering_logs_select_own" on public.engineering_logs
+  for select to authenticated using (user_id = auth.uid());
+drop policy if exists "engineering_logs_insert_own" on public.engineering_logs;
+create policy "engineering_logs_insert_own" on public.engineering_logs
+  for insert to authenticated with check (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.repositories
+      where repositories.id = repo_id and repositories.user_id = auth.uid()
+    )
+  );
+drop policy if exists "engineering_logs_update_own" on public.engineering_logs;
+create policy "engineering_logs_update_own" on public.engineering_logs
+  for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists "engineering_logs_delete_own" on public.engineering_logs;
+create policy "engineering_logs_delete_own" on public.engineering_logs
+  for delete to authenticated using (user_id = auth.uid());
+
+-- attachments
+drop policy if exists "attachments_select_own" on public.attachments;
+create policy "attachments_select_own" on public.attachments
+  for select to authenticated using (
+    exists (
+      select 1 from public.engineering_logs
+      where engineering_logs.id = log_id and engineering_logs.user_id = auth.uid()
+    )
+  );
+drop policy if exists "attachments_insert_own" on public.attachments;
+create policy "attachments_insert_own" on public.attachments
+  for insert to authenticated with check (
+    exists (
+      select 1 from public.engineering_logs
+      where engineering_logs.id = log_id and engineering_logs.user_id = auth.uid()
+    )
+  );
+drop policy if exists "attachments_delete_own" on public.attachments;
+create policy "attachments_delete_own" on public.attachments
+  for delete to authenticated using (
+    exists (
+      select 1 from public.engineering_logs
+      where engineering_logs.id = log_id and engineering_logs.user_id = auth.uid()
+    )
+  );
+
+-- 3 + 4. Storage: ownership-scoped writes, add delete, drop public listing
+drop policy if exists "bughive_storage_public_read" on storage.objects;
+
+drop policy if exists "bughive_storage_insert_own_log" on storage.objects;
+create policy "bughive_storage_insert_own_log" on storage.objects
+  for insert to authenticated with check (
+    bucket_id = 'bughive'
+    and (storage.foldername(name))[1] = 'logs'
+    and exists (
+      select 1 from public.engineering_logs
+      where engineering_logs.id::text = (storage.foldername(name))[2]
+        and engineering_logs.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "bughive_storage_update_own_log" on storage.objects;
+create policy "bughive_storage_update_own_log" on storage.objects
+  for update to authenticated using (
+    bucket_id = 'bughive'
+    and (storage.foldername(name))[1] = 'logs'
+    and exists (
+      select 1 from public.engineering_logs
+      where engineering_logs.id::text = (storage.foldername(name))[2]
+        and engineering_logs.user_id = auth.uid()
+    )
+  ) with check (
+    bucket_id = 'bughive'
+    and (storage.foldername(name))[1] = 'logs'
+    and exists (
+      select 1 from public.engineering_logs
+      where engineering_logs.id::text = (storage.foldername(name))[2]
+        and engineering_logs.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "bughive_storage_delete_own_log" on storage.objects;
+create policy "bughive_storage_delete_own_log" on storage.objects
+  for delete to authenticated using (
+    bucket_id = 'bughive'
+    and (storage.foldername(name))[1] = 'logs'
+    and exists (
+      select 1 from public.engineering_logs
+      where engineering_logs.id::text = (storage.foldername(name))[2]
+        and engineering_logs.user_id = auth.uid()
+    )
+  );
+
+alter function public.set_updated_at() set search_path = '';
+```
+
+Note: deleting the `profiles` row does not delete the underlying
+`auth.users` row or revoke BugHive's GitHub OAuth grant (that needs the
+service-role key, which must never live in the client app). After deleting
+their data in-app, users should also revoke access from
+https://github.com/settings/applications if they want to fully unlink
+GitHub.

@@ -23,6 +23,13 @@ class AuthController extends Controller {
     return _supabaseService.signInWithGithub();
   }
 
+  /// Re-runs the GitHub OAuth flow after a token became invalid. Clears the
+  /// known-bad cached token first so a fresh one always replaces it.
+  Future<bool> reconnectGithub() async {
+    await _supabaseService.clearGithubAccessToken();
+    return _supabaseService.signInWithGithub();
+  }
+
   Future<User?> continueWithoutGithub() async {
     await _supabaseService.startOfflineMode();
     return loadProfile();
@@ -44,6 +51,11 @@ class AuthController extends Controller {
   }
 
   Future<void> signOut() async {
+    await _supabaseService.signOut();
+  }
+
+  Future<void> deleteAccount() async {
+    await _supabaseService.deleteCloudAccountData();
     await _supabaseService.signOut();
   }
 

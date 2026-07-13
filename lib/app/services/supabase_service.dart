@@ -6,6 +6,7 @@ import '/app/models/repository.dart';
 import '/app/models/user.dart';
 import '/config/app.dart';
 import '/config/storage_keys.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
 
@@ -36,6 +37,11 @@ class SupabaseService {
   static bool _initialized = false;
   static bool _offlineMode = false;
   static String? _configurationError;
+  static const _secureStorage = FlutterSecureStorage();
+  static bool _githubTokenListenerAttached = false;
+
+  static String _githubTokenKey(String userId) =>
+      "github_provider_token_$userId";
 
   static bool get isConfigured =>
       AppConfig.supabaseUrl.trim().isNotEmpty &&
@@ -71,6 +77,27 @@ class SupabaseService {
       debug: AppConfig.environment != "production",
     );
     _initialized = true;
+    _attachGithubTokenListener();
+  }
+
+  /// Captures the GitHub provider token the moment it's delivered (only on
+  /// the initial SIGNED_IN event after OAuth) and caches it in secure
+  /// storage, since Supabase does not restore providerToken on app restart.
+  static void _attachGithubTokenListener() {
+    if (_githubTokenListenerAttached) return;
+    _githubTokenListenerAttached = true;
+
+    supabase.Supabase.instance.client.auth.onAuthStateChange.listen((
+      state,
+    ) async {
+      final session = state.session;
+      final token = session?.providerToken;
+      if (session == null || token == null || token.isEmpty) return;
+      await _secureStorage.write(
+        key: _githubTokenKey(session.user.id),
+        value: token,
+      );
+    });
   }
 
   static String? normalizeSupabaseUrl(String value) {
@@ -105,7 +132,24 @@ class SupabaseService {
 
   String? get currentUserId => currentSession?.user.id;
 
-  String? get currentGithubAccessToken => currentSession?.providerToken;
+  /// The GitHub OAuth access token. Prefers the live Supabase session token
+  /// (only present right after sign-in), falling back to the token cached
+  /// in secure storage on the initial SIGNED_IN event, since Supabase does
+  /// not restore providerToken across app restarts.
+  Future<String?> getGithubAccessToken() async {
+    final liveToken = currentSession?.providerToken;
+    if (liveToken != null && liveToken.isNotEmpty) return liveToken;
+
+    final userId = currentUserId;
+    if (userId == null) return null;
+    return _secureStorage.read(key: _githubTokenKey(userId));
+  }
+
+  Future<void> clearGithubAccessToken() async {
+    final userId = currentUserId;
+    if (userId == null) return;
+    await _secureStorage.delete(key: _githubTokenKey(userId));
+  }
 
   bool get isSignedIn => currentSession != null;
 
@@ -129,7 +173,7 @@ class SupabaseService {
       redirectTo: AppConfig.githubOAuthRedirectUrl.isEmpty
           ? null
           : AppConfig.githubOAuthRedirectUrl,
-      scopes: "repo read:user user:email",
+      scopes: "repo read:user user:email notifications",
     );
   }
 
@@ -140,11 +184,88 @@ class SupabaseService {
   }
 
   Future<void> signOut() async {
+    final userId = currentUserId;
     _offlineMode = false;
+    // Clear device-side state first so the account is never left signed in
+    // on this device, even if the server revocation below fails.
     await NyStorage.delete(StorageKeysConfig.offlineMode);
     await eraseLocalData();
+    if (userId != null) {
+      await _secureStorage.delete(key: _githubTokenKey(userId));
+    }
     if (!_initialized) return;
-    await _client.auth.signOut(scope: supabase.SignOutScope.global);
+    try {
+      // Global scope revokes the refresh token server-side across all devices.
+      await _client.auth.signOut(scope: supabase.SignOutScope.global);
+    } catch (_) {
+      // If the server can't be reached (e.g. offline), fall back to a local
+      // sign-out so the session is still cleared from this device. A logout
+      // that silently leaves a valid session behind is a security hole.
+      await _client.auth.signOut(scope: supabase.SignOutScope.local);
+    }
+  }
+
+  /// Permanently deletes everything this account wrote to Supabase: the
+  /// screenshot files in storage (not covered by any FK, so cascades won't
+  /// reach them), then the profiles row, which cascades to
+  /// repositories/engineering_logs/attachments at the DB level. Also clears
+  /// the cached GitHub token and on-device offline caches.
+  Future<void> deleteCloudAccountData() async {
+    if (_offlineMode || !_initialized) return;
+
+    final userId = currentUserId;
+    if (userId == null) return;
+
+    final repoRows = _rows(
+      await _client.from("repositories").select("id").eq("user_id", userId),
+    );
+    final repoIds = repoRows
+        .map((row) => row["id"]?.toString())
+        .whereType<String>()
+        .toList(growable: false);
+
+    final storagePaths = <String>[];
+    for (final repoId in repoIds) {
+      final logRows = _rows(
+        await _client
+            .from("engineering_logs")
+            .select("id")
+            .eq("repo_id", repoId),
+      );
+      final logIds = logRows
+          .map((row) => row["id"]?.toString())
+          .whereType<String>()
+          .toList(growable: false);
+
+      for (final logId in logIds) {
+        final attachmentRows = _rows(
+          await _client
+              .from("attachments")
+              .select("file_url")
+              .eq("log_id", logId),
+        );
+        for (final row in attachmentRows) {
+          final path = _storagePathFromPublicUrl(row["file_url"]?.toString());
+          if (path != null) storagePaths.add(path);
+        }
+      }
+    }
+
+    if (storagePaths.isNotEmpty) {
+      await _client.storage.from("bughive").remove(storagePaths);
+    }
+
+    await _client.from("profiles").delete().eq("id", userId);
+    await _secureStorage.delete(key: _githubTokenKey(userId));
+    await eraseLocalData();
+  }
+
+  String? _storagePathFromPublicUrl(String? url) {
+    if (url == null) return null;
+    const marker = "/storage/v1/object/public/bughive/";
+    final index = url.indexOf(marker);
+    if (index == -1) return null;
+    return url.substring(index + marker.length);
   }
 
   Future<void> eraseLocalData() async {

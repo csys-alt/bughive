@@ -3,8 +3,10 @@ import 'dart:async';
 import '/app/controllers/log_controller.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
+import '/app/services/github_service.dart';
 import '/resources/pages/create_log_page.dart';
 import '/resources/pages/log_detail_page.dart';
+import '/resources/widgets/github_reconnect_banner.dart';
 import '/resources/widgets/loader_widget.dart';
 import '/resources/widgets/log_card.dart';
 import 'package:flutter/material.dart';
@@ -97,6 +99,10 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
             .toList(growable: false);
         _syncingId = null;
       });
+    } on GithubReauthRequiredException catch (error) {
+      if (!mounted) return;
+      setState(() => _syncingId = null);
+      _showReauthSnackBar(error);
     } catch (error) {
       if (!mounted) return;
       setState(() => _syncingId = null);
@@ -106,6 +112,29 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
     }
   }
 
+  void _showReauthSnackBar(GithubReauthRequiredException error) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(error.toString()),
+        action: SnackBarAction(
+          label: "Reconnect",
+          onPressed: () => showDialog<void>(
+            context: context,
+            builder: (context) => AlertDialog(
+              content: const GithubReconnectBanner(),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text("Close"),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<bool> _deleteLog(EngineeringLog log) async {
     final repository = _repository;
     if (repository == null) return false;
@@ -113,6 +142,10 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
     try {
       await widget.controller.deleteLog(repository: repository, log: log);
       return true;
+    } on GithubReauthRequiredException catch (error) {
+      if (!mounted) return false;
+      _showReauthSnackBar(error);
+      return false;
     } catch (error) {
       if (!mounted) return false;
       ScaffoldMessenger.of(

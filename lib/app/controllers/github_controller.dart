@@ -30,7 +30,7 @@ class GithubController extends Controller {
 
     final metadata = await _githubService.getRepository(
       repositoryUrl,
-      accessToken: _supabaseService.currentGithubAccessToken,
+      accessToken: await _supabaseService.getGithubAccessToken(),
     );
 
     final savedRepository = await _supabaseService.saveRepository(
@@ -85,9 +85,9 @@ class GithubController extends Controller {
     required EngineeringLog log,
     List<String> attachmentUrls = const [],
   }) async {
-    final accessToken = _supabaseService.currentGithubAccessToken;
+    final accessToken = await _supabaseService.getGithubAccessToken();
     if (accessToken == null || accessToken.isEmpty) {
-      throw const GithubServiceException("GitHub access token is missing.");
+      throw const GithubReauthRequiredException();
     }
 
     if (_supabaseService.isLocalRepository(repository) ||
@@ -175,9 +175,9 @@ class GithubController extends Controller {
       throw const GithubServiceException("Sync to GitHub first.");
     }
 
-    final accessToken = _supabaseService.currentGithubAccessToken;
+    final accessToken = await _supabaseService.getGithubAccessToken();
     if (accessToken == null || accessToken.isEmpty) {
-      throw const GithubServiceException("GitHub access token is missing.");
+      throw const GithubReauthRequiredException();
     }
 
     await _githubService.closeIssue(
@@ -191,7 +191,7 @@ class GithubController extends Controller {
   }
 
   Future<void> _importGithubIssues(Repository repository) async {
-    final accessToken = _supabaseService.currentGithubAccessToken;
+    final accessToken = await _supabaseService.getGithubAccessToken();
     if (accessToken == null || accessToken.isEmpty || repository.id == null) {
       return;
     }
