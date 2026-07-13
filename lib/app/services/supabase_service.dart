@@ -4,6 +4,7 @@ import '/app/models/attachment.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
 import '/app/models/user.dart';
+import '/app/services/offline/remote_data_source.dart';
 import '/config/app.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
@@ -36,6 +37,8 @@ class SupabaseService {
   static String? _configurationError;
   static const _secureStorage = FlutterSecureStorage();
   static bool _githubTokenListenerAttached = false;
+
+  final RemoteDataSource _remote = SupabaseRemote();
 
   static String _githubTokenKey(String userId) =>
       "github_provider_token_$userId";
@@ -256,205 +259,62 @@ class SupabaseService {
     return User.fromJson(Map<String, dynamic>.from(response));
   }
 
-  Future<List<Repository>> fetchRepositories() async {
-    final userId = currentUserId;
-    if (userId == null) return const [];
+  Future<List<Repository>> fetchRepositories() => _remote.fetchRepositories();
 
-    final response = await _client
-        .from("repositories")
-        .select()
-        .eq("user_id", userId)
-        .order("created_at", ascending: false);
+  Future<LogCounts> fetchLogCounts(String repoId) =>
+      _remote.fetchLogCounts(repoId);
 
-    return _rows(response).map(Repository.fromJson).toList();
-  }
+  Future<Repository> saveRepository(Repository repository) =>
+      _remote.saveRepository(repository);
 
-  Future<LogCounts> fetchLogCounts(String repoId) async {
-    final response = await _client
-        .from("engineering_logs")
-        .select("id,sync_status,github_issue_number,updated_at,created_at")
-        .eq("repo_id", repoId);
+  Future<Repository> markRepositorySynced(Repository repository) =>
+      _remote.markRepositorySynced(repository);
 
-    final rows = _rows(response);
-    final synced = rows
-        .where(
-          (row) =>
-              SyncStatus.fromValue(row["sync_status"] as String?) !=
-              SyncStatus.local,
-        )
-        .length;
-
-    return LogCounts(
-      total: rows.length,
-      local: rows.length - synced,
-      synced: synced,
-      latestGithubSync: _latestGithubSync(
-        rows.map(EngineeringLog.fromJson).toList(growable: false),
-      ),
-    );
-  }
-
-  Future<Repository> saveRepository(Repository repository) async {
-    final userId = currentUserId;
-    if (userId == null) {
-      throw const SupabaseServiceException("Login is required.");
-    }
-
-    final response = await _client
-        .from("repositories")
-        .upsert(
-          repository.copyWith(userId: userId).toSupabaseJson(),
-          onConflict: "user_id,github_repo_id",
-        )
-        .select()
-        .single();
-
-    return Repository.fromJson(Map<String, dynamic>.from(response));
-  }
-
-  Future<Repository> markRepositorySynced(Repository repository) async {
-    final now = DateTime.now().toUtc();
-    if (repository.id == null) return repository.copyWith(lastSync: now);
-
-    final response = await _client
-        .from("repositories")
-        .update({"last_sync": now.toIso8601String()})
-        .eq("id", repository.id!)
-        .select()
-        .single();
-
-    return Repository.fromJson(Map<String, dynamic>.from(response));
-  }
-
-  Future<void> deleteRepository(Repository repository) async {
-    if (repository.id == null) return;
-    await _client.from("repositories").delete().eq("id", repository.id!);
-  }
+  Future<void> deleteRepository(Repository repository) =>
+      _remote.deleteRepository(repository);
 
   Future<List<EngineeringLog>> fetchEngineeringLogs(
     String repoId, {
     SyncStatus? status,
-  }) async {
-    dynamic query = _client
-        .from("engineering_logs")
-        .select()
-        .eq("repo_id", repoId);
+  }) => _remote.fetchEngineeringLogs(repoId, status: status);
 
-    if (status == SyncStatus.synced) {
-      query = query.neq("sync_status", SyncStatus.local.value);
-    } else if (status != null) {
-      query = query.eq("sync_status", status.value);
-    }
+  Future<EngineeringLog> createEngineeringLog(EngineeringLog log) =>
+      _remote.upsertLog(log);
 
-    final response = await query.order("created_at", ascending: false);
-    return _rows(response).map(EngineeringLog.fromJson).toList();
-  }
-
-  Future<EngineeringLog> createEngineeringLog(EngineeringLog log) async {
-    final response = await _client
-        .from("engineering_logs")
-        .insert(log.toSupabaseJson())
-        .select()
-        .single();
-
-    return EngineeringLog.fromJson(Map<String, dynamic>.from(response));
-  }
-
-  Future<EngineeringLog> updateEngineeringLog(EngineeringLog log) async {
+  Future<EngineeringLog> updateEngineeringLog(EngineeringLog log) {
     if (log.id == null) {
       throw const SupabaseServiceException("Log must be saved first.");
     }
-
-    final response = await _client
-        .from("engineering_logs")
-        .update(log.toSupabaseJson())
-        .eq("id", log.id!)
-        .select()
-        .single();
-
-    return EngineeringLog.fromJson(Map<String, dynamic>.from(response));
+    return _remote.upsertLog(log);
   }
 
   Future<EngineeringLog> markLogSynced({
     required EngineeringLog log,
     required int githubIssueNumber,
-  }) async {
-    if (log.id == null) {
-      throw const SupabaseServiceException("Log must be saved before sync.");
-    }
+  }) => _remote.markLogSynced(log: log, githubIssueNumber: githubIssueNumber);
 
-    final response = await _client
-        .from("engineering_logs")
-        .update({
-          "sync_status": SyncStatus.synced.value,
-          "github_issue_number": githubIssueNumber,
-          "updated_at": DateTime.now().toUtc().toIso8601String(),
-        })
-        .eq("id", log.id!)
-        .select()
-        .single();
-
-    return EngineeringLog.fromJson(Map<String, dynamic>.from(response));
-  }
-
-  Future<EngineeringLog> markLogFinished(EngineeringLog log) async {
-    if (log.id == null) {
-      throw const SupabaseServiceException("Log must be saved first.");
-    }
-
-    final response = await _client
-        .from("engineering_logs")
-        .update({
-          "sync_status": SyncStatus.closed.value,
-          "updated_at": DateTime.now().toUtc().toIso8601String(),
-        })
-        .eq("id", log.id!)
-        .select()
-        .single();
-
-    return EngineeringLog.fromJson(Map<String, dynamic>.from(response));
-  }
+  Future<EngineeringLog> markLogFinished(EngineeringLog log) =>
+      _remote.markLogFinished(log);
 
   Future<void> deleteEngineeringLog(EngineeringLog log) async {
     if (log.id == null) return;
-    await _client.from("engineering_logs").delete().eq("id", log.id!);
+    await _remote.deleteLog(log.id!);
   }
 
-  Future<Attachment> createAttachment(Attachment attachment) async {
-    final response = await _client
-        .from("attachments")
-        .insert(attachment.toSupabaseJson())
-        .select()
-        .single();
+  Future<Attachment> createAttachment(Attachment attachment) =>
+      _remote.upsertAttachment(attachment);
 
-    return Attachment.fromJson(Map<String, dynamic>.from(response));
-  }
-
-  Future<List<Attachment>> fetchAttachments(String logId) async {
-    final response = await _client
-        .from("attachments")
-        .select()
-        .eq("log_id", logId)
-        .order("created_at", ascending: false);
-
-    return _rows(response).map(Attachment.fromJson).toList();
-  }
+  Future<List<Attachment>> fetchAttachments(String logId) =>
+      _remote.fetchAttachments(logId);
 
   Future<Attachment> uploadScreenshot({
     required String logId,
     required File file,
-  }) async {
-    final path = "logs/$logId/${DateTime.now().microsecondsSinceEpoch}.png";
-    await _client.storage
-        .from("bughive")
-        .upload(
-          path,
-          file,
-          fileOptions: const supabase.FileOptions(upsert: true),
-        );
-
-    final publicUrl = _client.storage.from("bughive").getPublicUrl(path);
-    return createAttachment(Attachment(logId: logId, fileUrl: publicUrl));
+  }) {
+    // Temporary: generate an id here until Task 6 introduces UUIDs and moves
+    // this id generation into the caller/queue.
+    final id = DateTime.now().microsecondsSinceEpoch.toString();
+    return _remote.uploadScreenshot(logId: logId, attachmentId: id, file: file);
   }
 
   User _profileFromSession(supabase.Session session) {
@@ -474,17 +334,6 @@ class SupabaseService {
       "avatar_url": avatarUrl?.toString(),
       "created_at": session.user.createdAt,
     });
-  }
-
-  DateTime? _latestGithubSync(List<EngineeringLog> logs) {
-    DateTime? latest;
-    for (final log in logs) {
-      if (log.githubIssueNumber == null) continue;
-      final syncedAt = log.updatedAt ?? log.createdAt;
-      if (syncedAt == null) continue;
-      if (latest == null || syncedAt.isAfter(latest)) latest = syncedAt;
-    }
-    return latest;
   }
 
   List<Map<String, dynamic>> _rows(dynamic response) {
