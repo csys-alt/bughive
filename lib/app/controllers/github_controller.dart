@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import '/app/models/attachment.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
 import '/app/services/github_service.dart';
@@ -18,11 +17,6 @@ class GithubController extends Controller {
   final GithubService _githubService;
 
   Future<Repository> addRepository(String repositoryUrl) async {
-    if (_supabaseService.isOfflineMode) {
-      final metadata = _offlineRepository(repositoryUrl);
-      return _supabaseService.saveRepository(metadata);
-    }
-
     final userId = _supabaseService.currentUserId;
     if (userId == null) {
       throw const SupabaseServiceException("Login is required.");
@@ -50,34 +44,10 @@ class GithubController extends Controller {
   Future<String> repositoriesPageUrl() async {
     final profile = await _supabaseService.loadProfile();
     final username = profile?.username;
-    if (username == null ||
-        username.isEmpty ||
-        username == "Offline workspace") {
+    if (username == null || username.isEmpty) {
       return "https://github.com/?tab=repositories";
     }
     return "https://github.com/$username?tab=repositories";
-  }
-
-  Repository _offlineRepository(String repositoryUrl) {
-    final raw = repositoryUrl.trim();
-    final uri = Uri.tryParse(raw.contains("://") ? raw : "https://$raw");
-    final parts = uri?.pathSegments.where((part) => part.isNotEmpty).toList();
-    if (uri == null ||
-        uri.host.toLowerCase() != "github.com" ||
-        parts == null ||
-        parts.length < 2) {
-      throw const GithubServiceException(
-        "Enter a valid GitHub repository URL.",
-      );
-    }
-
-    return Repository(
-      userId: "offline",
-      githubRepoId: DateTime.now().microsecondsSinceEpoch,
-      owner: parts[0],
-      name: parts[1],
-      url: "https://github.com/${parts[0]}/${parts[1]}",
-    );
   }
 
   Future<EngineeringLog> syncLog({
@@ -88,53 +58,6 @@ class GithubController extends Controller {
     final accessToken = await _supabaseService.getGithubAccessToken();
     if (accessToken == null || accessToken.isEmpty) {
       throw const GithubReauthRequiredException();
-    }
-
-    if (_supabaseService.isLocalRepository(repository) ||
-        _supabaseService.isLocalLog(log)) {
-      final metadata = await _githubService.getRepository(
-        repository.url,
-        accessToken: accessToken,
-      );
-      final savedRepository = await _supabaseService.saveRepository(
-        Repository(
-          githubRepoId: metadata.githubRepoId,
-          owner: metadata.owner,
-          name: metadata.name,
-          url: metadata.url,
-          createdAt: metadata.createdAt,
-        ),
-      );
-      final onlineLog = await _supabaseService.createEngineeringLog(
-        EngineeringLog(
-          repoId: savedRepository.id!,
-          userId: _supabaseService.currentUserId!,
-          title: log.title,
-          description: log.description,
-          type: log.type,
-          severity: log.severity,
-          environment: log.environment,
-          labels: log.labels,
-        ),
-      );
-      final syncedAttachmentUrls = await _saveAttachments(
-        onlineLog,
-        attachmentUrls,
-        persistExternalUrls: true,
-      );
-      final issueNumber = await _githubService.createIssue(
-        repository: savedRepository,
-        log: onlineLog,
-        accessToken: accessToken,
-        attachmentUrls: syncedAttachmentUrls,
-      );
-      final syncedLog = await _supabaseService.markLogSynced(
-        log: onlineLog,
-        githubIssueNumber: issueNumber,
-      );
-      await _supabaseService.markRepositorySynced(savedRepository);
-      await _supabaseService.deleteEngineeringLog(log);
-      return syncedLog;
     }
 
     final syncedAttachmentUrls = await _saveAttachments(log, attachmentUrls);
@@ -247,9 +170,8 @@ class GithubController extends Controller {
 
   Future<List<String>> _saveAttachments(
     EngineeringLog log,
-    List<String> attachmentUrls, {
-    bool persistExternalUrls = false,
-  }) async {
+    List<String> attachmentUrls,
+  ) async {
     final logId = log.id;
     if (logId == null) return const [];
 
@@ -266,11 +188,6 @@ class GithubController extends Controller {
         );
         savedUrls.add(attachment.fileUrl);
       } else {
-        if (persistExternalUrls) {
-          await _supabaseService.createAttachment(
-            Attachment(logId: logId, fileUrl: value),
-          );
-        }
         savedUrls.add(value);
       }
     }

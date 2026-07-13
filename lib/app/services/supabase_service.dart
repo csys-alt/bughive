@@ -5,9 +5,7 @@ import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
 import '/app/models/user.dart';
 import '/config/app.dart';
-import '/config/storage_keys.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:nylo_framework/nylo_framework.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
 
 class SupabaseServiceException implements Exception {
@@ -35,7 +33,6 @@ class LogCounts {
 
 class SupabaseService {
   static bool _initialized = false;
-  static bool _offlineMode = false;
   static String? _configurationError;
   static const _secureStorage = FlutterSecureStorage();
   static bool _githubTokenListenerAttached = false;
@@ -50,14 +47,7 @@ class SupabaseService {
   static bool get isInitialized => _initialized;
 
   static Future<void> initialize() async {
-    _offlineMode =
-        await NyStorage.read<bool>(
-          StorageKeysConfig.offlineMode,
-          defaultValue: false,
-        ) ??
-        false;
     if (_initialized) return;
-    if (_offlineMode) return;
     if (!isConfigured) {
       _configurationError =
           "Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in .env.";
@@ -110,12 +100,6 @@ class SupabaseService {
     return uri.toString();
   }
 
-  bool get isOfflineMode => _offlineMode;
-
-  bool isLocalRepository(Repository repository) => _isLocalId(repository.id);
-
-  bool isLocalLog(EngineeringLog log) => _isLocalId(log.id);
-
   supabase.SupabaseClient get _client {
     if (!_initialized) {
       throw SupabaseServiceException(
@@ -126,7 +110,7 @@ class SupabaseService {
   }
 
   supabase.Session? get currentSession {
-    if (_offlineMode || !_initialized) return null;
+    if (!_initialized) return null;
     return supabase.Supabase.instance.client.auth.currentSession;
   }
 
@@ -154,12 +138,12 @@ class SupabaseService {
   bool get isSignedIn => currentSession != null;
 
   Stream<supabase.AuthState>? get authStateChanges {
-    if (_offlineMode || !_initialized) return null;
+    if (!_initialized) return null;
     return _client.auth.onAuthStateChange;
   }
 
   Future<bool> signInWithGithub() async {
-    if (!_initialized && !_offlineMode) {
+    if (!_initialized) {
       await initialize();
     }
     if (!_initialized) {
@@ -177,19 +161,10 @@ class SupabaseService {
     );
   }
 
-  Future<User> startOfflineMode() async {
-    _offlineMode = true;
-    await NyStorage.save(StorageKeysConfig.offlineMode, true);
-    return _offlineProfile();
-  }
-
   Future<void> signOut() async {
     final userId = currentUserId;
-    _offlineMode = false;
     // Clear device-side state first so the account is never left signed in
     // on this device, even if the server revocation below fails.
-    await NyStorage.delete(StorageKeysConfig.offlineMode);
-    await eraseLocalData();
     if (userId != null) {
       await _secureStorage.delete(key: _githubTokenKey(userId));
     }
@@ -209,9 +184,9 @@ class SupabaseService {
   /// screenshot files in storage (not covered by any FK, so cascades won't
   /// reach them), then the profiles row, which cascades to
   /// repositories/engineering_logs/attachments at the DB level. Also clears
-  /// the cached GitHub token and on-device offline caches.
+  /// the cached GitHub token.
   Future<void> deleteCloudAccountData() async {
-    if (_offlineMode || !_initialized) return;
+    if (!_initialized) return;
 
     final userId = currentUserId;
     if (userId == null) return;
@@ -257,7 +232,6 @@ class SupabaseService {
 
     await _client.from("profiles").delete().eq("id", userId);
     await _secureStorage.delete(key: _githubTokenKey(userId));
-    await eraseLocalData();
   }
 
   String? _storagePathFromPublicUrl(String? url) {
@@ -268,17 +242,7 @@ class SupabaseService {
     return url.substring(index + marker.length);
   }
 
-  Future<void> eraseLocalData() async {
-    await NyStorage.delete(StorageKeysConfig.offlineMode);
-    await NyStorage.delete(StorageKeysConfig.offlineRepositories);
-    await NyStorage.delete(StorageKeysConfig.offlineLogs);
-    await NyStorage.delete(StorageKeysConfig.offlineAttachments);
-    _offlineMode = false;
-  }
-
   Future<User?> loadProfile() async {
-    if (_offlineMode) return _offlineProfile();
-
     final session = currentSession;
     if (session == null) return null;
 
@@ -293,8 +257,6 @@ class SupabaseService {
   }
 
   Future<List<Repository>> fetchRepositories() async {
-    if (_offlineMode) return _localRepositories();
-
     final userId = currentUserId;
     if (userId == null) return const [];
 
@@ -304,26 +266,10 @@ class SupabaseService {
         .eq("user_id", userId)
         .order("created_at", ascending: false);
 
-    return [
-      ...await _localRepositories(),
-      ..._rows(response).map(Repository.fromJson),
-    ];
+    return _rows(response).map(Repository.fromJson).toList();
   }
 
   Future<LogCounts> fetchLogCounts(String repoId) async {
-    if (_offlineMode || _isLocalId(repoId)) {
-      final rows = (await _localLogs())
-          .where((log) => log.repoId == repoId)
-          .toList(growable: false);
-      final synced = rows.where((log) => log.isSynced).length;
-      return LogCounts(
-        total: rows.length,
-        local: rows.length - synced,
-        synced: synced,
-        latestGithubSync: _latestGithubSync(rows),
-      );
-    }
-
     final response = await _client
         .from("engineering_logs")
         .select("id,sync_status,github_issue_number,updated_at,created_at")
@@ -349,17 +295,6 @@ class SupabaseService {
   }
 
   Future<Repository> saveRepository(Repository repository) async {
-    if (_offlineMode) {
-      final repositories = await _localRepositories();
-      final saved = repository.copyWith(
-        id: repository.id ?? _localId(),
-        userId: "offline",
-        createdAt: DateTime.now().toUtc(),
-      );
-      await _saveLocalRepositories([saved, ...repositories]);
-      return saved;
-    }
-
     final userId = currentUserId;
     if (userId == null) {
       throw const SupabaseServiceException("Login is required.");
@@ -381,17 +316,6 @@ class SupabaseService {
     final now = DateTime.now().toUtc();
     if (repository.id == null) return repository.copyWith(lastSync: now);
 
-    if (_offlineMode || _isLocalId(repository.id)) {
-      final updated = repository.copyWith(lastSync: now);
-      final repositories = await _localRepositories();
-      await _saveLocalRepositories(
-        repositories
-            .map((item) => item.id == repository.id ? updated : item)
-            .toList(growable: false),
-      );
-      return updated;
-    }
-
     final response = await _client
         .from("repositories")
         .update({"last_sync": now.toIso8601String()})
@@ -404,34 +328,6 @@ class SupabaseService {
 
   Future<void> deleteRepository(Repository repository) async {
     if (repository.id == null) return;
-
-    if (_offlineMode || _isLocalId(repository.id)) {
-      final repositories = await _localRepositories();
-      final logs = await _localLogs();
-      final attachments = await _localAttachments();
-      final deletedLogIds = logs
-          .where((log) => log.repoId == repository.id)
-          .map((log) => log.id)
-          .whereType<String>()
-          .toSet();
-      await _saveLocalRepositories(
-        repositories
-            .where((item) => item.id != repository.id)
-            .toList(growable: false),
-      );
-      await _saveLocalLogs(
-        logs
-            .where((log) => log.repoId != repository.id)
-            .toList(growable: false),
-      );
-      await _saveLocalAttachments(
-        attachments
-            .where((attachment) => !deletedLogIds.contains(attachment.logId))
-            .toList(growable: false),
-      );
-      return;
-    }
-
     await _client.from("repositories").delete().eq("id", repository.id!);
   }
 
@@ -439,23 +335,6 @@ class SupabaseService {
     String repoId, {
     SyncStatus? status,
   }) async {
-    if (_offlineMode || _isLocalId(repoId)) {
-      final logs = (await _localLogs())
-          .where((log) {
-            return log.repoId == repoId &&
-                (status == null ||
-                    (status == SyncStatus.synced && log.isSynced) ||
-                    log.syncStatus == status);
-          })
-          .toList(growable: false);
-      logs.sort((a, b) {
-        final left = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final right = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return right.compareTo(left);
-      });
-      return logs;
-    }
-
     dynamic query = _client
         .from("engineering_logs")
         .select()
@@ -472,19 +351,6 @@ class SupabaseService {
   }
 
   Future<EngineeringLog> createEngineeringLog(EngineeringLog log) async {
-    if (_offlineMode || _isLocalId(log.repoId)) {
-      final logs = await _localLogs();
-      final now = DateTime.now().toUtc();
-      final saved = log.copyWith(
-        id: _localId(),
-        userId: "offline",
-        createdAt: now,
-        updatedAt: now,
-      );
-      await _saveLocalLogs([saved, ...logs]);
-      return saved;
-    }
-
     final response = await _client
         .from("engineering_logs")
         .insert(log.toSupabaseJson())
@@ -497,15 +363,6 @@ class SupabaseService {
   Future<EngineeringLog> updateEngineeringLog(EngineeringLog log) async {
     if (log.id == null) {
       throw const SupabaseServiceException("Log must be saved first.");
-    }
-
-    if (_offlineMode || _isLocalId(log.id)) {
-      final logs = await _localLogs();
-      final updated = log.copyWith(updatedAt: DateTime.now().toUtc());
-      await _saveLocalLogs(
-        logs.map((item) => item.id == log.id ? updated : item).toList(),
-      );
-      return updated;
     }
 
     final response = await _client
@@ -545,18 +402,6 @@ class SupabaseService {
       throw const SupabaseServiceException("Log must be saved first.");
     }
 
-    if (_offlineMode || _isLocalId(log.id)) {
-      final logs = await _localLogs();
-      final updated = log.copyWith(
-        syncStatus: SyncStatus.closed,
-        updatedAt: DateTime.now().toUtc(),
-      );
-      await _saveLocalLogs(
-        logs.map((item) => item.id == log.id ? updated : item).toList(),
-      );
-      return updated;
-    }
-
     final response = await _client
         .from("engineering_logs")
         .update({
@@ -572,37 +417,10 @@ class SupabaseService {
 
   Future<void> deleteEngineeringLog(EngineeringLog log) async {
     if (log.id == null) return;
-
-    if (_offlineMode || _isLocalId(log.id)) {
-      final logs = await _localLogs();
-      final attachments = await _localAttachments();
-      await _saveLocalLogs(
-        logs.where((item) => item.id != log.id).toList(growable: false),
-      );
-      await _saveLocalAttachments(
-        attachments
-            .where((attachment) => attachment.logId != log.id)
-            .toList(growable: false),
-      );
-      return;
-    }
-
     await _client.from("engineering_logs").delete().eq("id", log.id!);
   }
 
   Future<Attachment> createAttachment(Attachment attachment) async {
-    if (_offlineMode || _isLocalId(attachment.logId)) {
-      final attachments = await _localAttachments();
-      final saved = Attachment(
-        id: attachment.id ?? _localId(),
-        logId: attachment.logId,
-        fileUrl: attachment.fileUrl,
-        createdAt: DateTime.now().toUtc(),
-      );
-      await _saveLocalAttachments([saved, ...attachments]);
-      return saved;
-    }
-
     final response = await _client
         .from("attachments")
         .insert(attachment.toSupabaseJson())
@@ -613,12 +431,6 @@ class SupabaseService {
   }
 
   Future<List<Attachment>> fetchAttachments(String logId) async {
-    if (_offlineMode || _isLocalId(logId)) {
-      return (await _localAttachments())
-          .where((attachment) => attachment.logId == logId)
-          .toList(growable: false);
-    }
-
     final response = await _client
         .from("attachments")
         .select()
@@ -663,114 +475,6 @@ class SupabaseService {
       "created_at": session.user.createdAt,
     });
   }
-
-  User _offlineProfile() {
-    return User.fromJson({
-      "id": "offline",
-      "username": "Offline workspace",
-      "github_id": null,
-      "avatar_url": null,
-      "created_at": DateTime.now().toUtc().toIso8601String(),
-    });
-  }
-
-  Future<List<Repository>> _localRepositories() async {
-    final rows =
-        await NyStorage.readJson<List>(
-          StorageKeysConfig.offlineRepositories,
-          defaultValue: const [],
-        ) ??
-        const [];
-    return rows
-        .whereType<Map>()
-        .map((row) => Repository.fromJson(Map<String, dynamic>.from(row)))
-        .toList(growable: false);
-  }
-
-  Future<void> _saveLocalRepositories(List<Repository> repositories) {
-    return NyStorage.saveJson(
-      StorageKeysConfig.offlineRepositories,
-      repositories.map(_repositoryJson).toList(growable: false),
-    );
-  }
-
-  Future<List<EngineeringLog>> _localLogs() async {
-    final rows =
-        await NyStorage.readJson<List>(
-          StorageKeysConfig.offlineLogs,
-          defaultValue: const [],
-        ) ??
-        const [];
-    return rows
-        .whereType<Map>()
-        .map((row) => EngineeringLog.fromJson(Map<String, dynamic>.from(row)))
-        .toList(growable: false);
-  }
-
-  Future<void> _saveLocalLogs(List<EngineeringLog> logs) {
-    return NyStorage.saveJson(
-      StorageKeysConfig.offlineLogs,
-      logs.map(_logJson).toList(growable: false),
-    );
-  }
-
-  Future<List<Attachment>> _localAttachments() async {
-    final rows =
-        await NyStorage.readJson<List>(
-          StorageKeysConfig.offlineAttachments,
-          defaultValue: const [],
-        ) ??
-        const [];
-    return rows
-        .whereType<Map>()
-        .map((row) => Attachment.fromJson(Map<String, dynamic>.from(row)))
-        .toList(growable: false);
-  }
-
-  Future<void> _saveLocalAttachments(List<Attachment> attachments) {
-    return NyStorage.saveJson(
-      StorageKeysConfig.offlineAttachments,
-      attachments.map(_attachmentJson).toList(growable: false),
-    );
-  }
-
-  Map<String, dynamic> _logJson(EngineeringLog log) => {
-    if (log.id != null) "id": log.id,
-    "repo_id": log.repoId,
-    "user_id": log.userId,
-    "title": log.title,
-    "description": log.description,
-    "type": log.type.value,
-    "severity": log.severity.value,
-    "environment": log.environment,
-    "labels": log.labels,
-    "sync_status": log.syncStatus.value,
-    "github_issue_number": log.githubIssueNumber,
-    "created_at": log.createdAt?.toIso8601String(),
-    "updated_at": log.updatedAt?.toIso8601String(),
-  };
-
-  Map<String, dynamic> _repositoryJson(Repository repository) => {
-    if (repository.id != null) "id": repository.id,
-    if (repository.userId != null) "user_id": repository.userId,
-    "github_repo_id": repository.githubRepoId,
-    "owner": repository.owner,
-    "name": repository.name,
-    "url": repository.url,
-    "last_sync": repository.lastSync?.toIso8601String(),
-    "created_at": repository.createdAt?.toIso8601String(),
-  };
-
-  Map<String, dynamic> _attachmentJson(Attachment attachment) => {
-    if (attachment.id != null) "id": attachment.id,
-    "log_id": attachment.logId,
-    "file_url": attachment.fileUrl,
-    "created_at": attachment.createdAt?.toIso8601String(),
-  };
-
-  String _localId() => "local_${DateTime.now().microsecondsSinceEpoch}";
-
-  bool _isLocalId(String? id) => id?.startsWith("local_") ?? false;
 
   DateTime? _latestGithubSync(List<EngineeringLog> logs) {
     DateTime? latest;

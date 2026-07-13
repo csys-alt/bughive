@@ -51,11 +51,12 @@ class _ProfilePageState extends NyPage<ProfilePage> {
     }
     if (!mounted) return;
 
-    routeTo(LoginPage.path, navigationType: NavigationType.pushAndForgetAll);
-
+    // Show the confirmation while this page's context is still mounted, then
+    // navigate to login. Navigating first would deactivate `context` and the
+    // dialog would fail to show.
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text("Account data deleted"),
         content: const Text(
           "Your profile, repositories, logs, and attachments were removed "
@@ -64,12 +65,12 @@ class _ProfilePageState extends NyPage<ProfilePage> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text("Later"),
           ),
           FilledButton(
             onPressed: () {
-              Navigator.of(context).pop();
+              Navigator.of(dialogContext).pop();
               launchUrl(
                 Uri.parse(_githubRevokeUrl),
                 mode: LaunchMode.externalApplication,
@@ -80,6 +81,9 @@ class _ProfilePageState extends NyPage<ProfilePage> {
         ],
       ),
     );
+
+    if (!mounted) return;
+    routeTo(LoginPage.path, navigationType: NavigationType.pushAndForgetAll);
   }
 
   Future<void> _openGithubProfile(User user) async {
@@ -134,7 +138,7 @@ class _ProfilePageState extends NyPage<ProfilePage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                user.username ?? "Offline workspace",
+                                user.username ?? "GitHub user",
                                 style: theme.textTheme.titleLarge?.copyWith(
                                   fontWeight: FontWeight.w900,
                                   letterSpacing: -0.5,
@@ -142,9 +146,7 @@ class _ProfilePageState extends NyPage<ProfilePage> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                widget.controller.isOfflineMode
-                                    ? "Offline mode"
-                                    : "GitHub connected",
+                                "GitHub connected",
                                 style: theme.textTheme.bodySmall?.copyWith(
                                   color: const Color(0xFFB8B5B0),
                                 ),
@@ -169,27 +171,24 @@ class _ProfilePageState extends NyPage<ProfilePage> {
                                   ),
                                 ),
                               ],
-                              if (!widget.controller.isOfflineMode) ...[
-                                const SizedBox(height: 6),
-                                InkWell(
-                                  onTap: () =>
-                                      widget.controller.continueWithGithub(),
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 3,
-                                    ),
-                                    child: Text(
-                                      "Reconnect to GitHub",
-                                      style: theme.textTheme.bodySmall
-                                          ?.copyWith(
-                                            color: const Color(0xFF7FB4FF),
-                                            fontWeight: FontWeight.w800,
-                                          ),
+                              const SizedBox(height: 6),
+                              InkWell(
+                                onTap: () =>
+                                    widget.controller.reconnectGithub(),
+                                borderRadius: BorderRadius.circular(6),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 3,
+                                  ),
+                                  child: Text(
+                                    "Reconnect to GitHub",
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: const Color(0xFF7FB4FF),
+                                      fontWeight: FontWeight.w800,
                                     ),
                                   ),
                                 ),
-                              ],
+                              ),
                             ],
                           ),
                         ),
@@ -211,7 +210,7 @@ class _ProfilePageState extends NyPage<ProfilePage> {
                 _DangerButton(
                   onPressed: _deleteAccount,
                   icon: Icons.delete_forever,
-                  label: "Delete account & Supabase data",
+                  label: "Delete account & Database data",
                 ),
               ],
             ),
@@ -241,10 +240,8 @@ class _ProfilePageState extends NyPage<ProfilePage> {
   }
 
   String? _githubProfileUrl(User user) {
-    if (widget.controller.isOfflineMode) return null;
     final username = user.username?.trim();
     if (username == null || username.isEmpty) return null;
-    if (username == "Offline workspace") return null;
     return "https://github.com/$username";
   }
 }
@@ -267,29 +264,31 @@ class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text("Delete account & Supabase data?"),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "This permanently deletes your profile, repositories, logs, "
-            "and attachments from Supabase. This cannot be undone.",
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Type "DELETE" to confirm.',
-            style: Theme.of(context).textTheme.labelMedium,
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _controller,
-            autofocus: true,
-            decoration: const InputDecoration(border: OutlineInputBorder()),
-            onChanged: (value) =>
-                setState(() => _confirmed = value.trim() == "DELETE"),
-          ),
-        ],
+      title: const Text("Delete account & Database data?"),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "This permanently deletes your profile, repositories, logs, "
+              "and attachments from the database. This cannot be undone.",
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Type "DELETE" to confirm.',
+              style: Theme.of(context).textTheme.labelMedium,
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              decoration: const InputDecoration(border: OutlineInputBorder()),
+              onChanged: (value) =>
+                  setState(() => _confirmed = value.trim() == "DELETE"),
+            ),
+          ],
+        ),
       ),
       actions: [
         TextButton(
@@ -334,7 +333,7 @@ class _DangerZone extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            "This permanently deletes your account data from Database.",
+            "This permanently deletes your account data from the database.",
             style: Theme.of(
               context,
             ).textTheme.bodySmall?.copyWith(color: const Color(0xFFE6A0A0)),

@@ -13,8 +13,6 @@ class AuthController extends Controller {
 
   bool get isSignedIn => _supabaseService.isSignedIn;
 
-  bool get isOfflineMode => _supabaseService.isOfflineMode;
-
   Future<User?> loadProfile() async {
     return _supabaseService.loadProfile();
   }
@@ -28,11 +26,6 @@ class AuthController extends Controller {
   Future<bool> reconnectGithub() async {
     await _supabaseService.clearGithubAccessToken();
     return _supabaseService.signInWithGithub();
-  }
-
-  Future<User?> continueWithoutGithub() async {
-    await _supabaseService.startOfflineMode();
-    return loadProfile();
   }
 
   StreamSubscription<supabase.AuthState>? listenForSignedIn(
@@ -57,9 +50,5 @@ class AuthController extends Controller {
   Future<void> deleteAccount() async {
     await _supabaseService.deleteCloudAccountData();
     await _supabaseService.signOut();
-  }
-
-  Future<void> eraseLocalData() async {
-    await _supabaseService.eraseLocalData();
   }
 }

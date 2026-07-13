@@ -76,26 +76,6 @@ class _LoginPageState extends NyPage<LoginPage> {
     }
   }
 
-  Future<void> _continueWithoutGithub() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-
-    try {
-      await widget.controller.continueWithoutGithub();
-      if (!mounted) return;
-      routeTo(HomePage.path, navigationType: NavigationType.pushAndForgetAll);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() => _error = error.toString());
-    } finally {
-      if (mounted) {
-        setState(() => _loading = false);
-      }
-    }
-  }
-
   @override
   Widget view(BuildContext context) {
     final theme = Theme.of(context);
@@ -143,11 +123,6 @@ class _LoginPageState extends NyPage<LoginPage> {
                           )
                         : const FaIcon(FontAwesomeIcons.github, size: 18),
                     label: const Text("Continue with GitHub"),
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(
-                    onPressed: _loading ? null : _continueWithoutGithub,
-                    child: const Text("Continue offline"),
                   ),
                   if (_error != null) ...[
                     const SizedBox(height: 16),

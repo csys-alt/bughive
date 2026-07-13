@@ -93,7 +93,7 @@ class _CreateLogPageState extends NyPage<CreateLogPage> {
     } on LogSyncFailure catch (error) {
       if (!mounted) return;
       setState(() {
-        _syncWarning = "Saved locally. GitHub sync failed: ${error.message}";
+        _syncWarning = "Saved. GitHub sync failed: ${error.message}";
         _localSavedAfterSyncFailure = true;
         _saving = false;
       });

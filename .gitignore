@@ -41,3 +41,6 @@ CLAUDE.md
 .agent
 SKILL.md
 TASK.md
+android/key.properties
+*.jks
+*.keystore

@@ -23,14 +23,6 @@ final class StorageKeysConfig {
 
   static final StorageKey bearerToken = 'SK_BEARER_TOKEN';
 
-  static final StorageKey offlineMode = 'BUGHIVE_OFFLINE_MODE';
-
-  static final StorageKey offlineRepositories = 'BUGHIVE_OFFLINE_REPOSITORIES';
-
-  static final StorageKey offlineLogs = 'BUGHIVE_OFFLINE_LOGS';
-
-  static final StorageKey offlineAttachments = 'BUGHIVE_OFFLINE_ATTACHMENTS';
-
   // static final StorageKey coins = 'SK_COINS';
 
   /// Add your storage keys here...

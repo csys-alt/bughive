@@ -22,7 +22,6 @@ void main() {
       expect(find.text('BugHive'), findsOneWidget);
       expect(find.text('Engineering notes\nfor builders.'), findsOneWidget);
       expect(find.text('Continue with GitHub'), findsOneWidget);
-      expect(find.text('Continue offline'), findsOneWidget);
     });
   });
 

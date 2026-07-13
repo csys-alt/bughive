@@ -172,7 +172,7 @@ class LogController extends Controller {
     }
 
     final file = File(value);
-    if (!_supabaseService.isLocalLog(log) && file.existsSync()) {
+    if (file.existsSync()) {
       return _supabaseService.uploadScreenshot(logId: logId, file: file);
     }
 
