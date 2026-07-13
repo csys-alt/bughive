@@ -27,6 +27,7 @@ class SyncManager {
 
   StreamSubscription<bool>? _sub;
   bool _draining = false;
+  bool _redrainRequested = false;
 
   ValueNotifier<int> get pending => _queue.pending;
 
@@ -39,20 +40,31 @@ class SyncManager {
 
   /// Drains the queue in FIFO order. Each op is removed only after its remote
   /// write is confirmed; a failing op is marked and stops the drain so ordering
-  /// (log-before-attachment) is preserved.
+  /// (log-before-attachment) is preserved. If another drain is requested while
+  /// one is in flight, a follow-up pass runs so an op enqueued mid-drain is
+  /// never stranded.
   Future<void> drain() async {
-    if (_draining) return;
+    if (_draining) {
+      _redrainRequested = true;
+      return;
+    }
     _draining = true;
     try {
-      for (final op in await _queue.all()) {
-        try {
-          await _apply(op);
-          await _queue.remove(op.opId);
-        } catch (error) {
-          await _queue.markError(op.opId, error.toString());
-          break;
+      do {
+        _redrainRequested = false;
+        var failed = false;
+        for (final op in await _queue.all()) {
+          try {
+            await _apply(op);
+            await _queue.remove(op.opId);
+          } catch (error) {
+            await _queue.markError(op.opId, error.toString());
+            failed = true;
+            break;
+          }
         }
-      }
+        if (failed) break; // fail-stop: don't re-loop on a persistent failure
+      } while (_redrainRequested);
     } finally {
       _draining = false;
     }

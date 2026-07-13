@@ -17,9 +17,15 @@ class FakeRemote implements RemoteDataSource {
   final Map<String, EngineeringLog> logs = {};
   final Map<String, Attachment> attachments = {};
   int uploadCalls = 0;
+  Future<void> Function()? beforeUpsertLog;
 
   @override
   Future<EngineeringLog> upsertLog(EngineeringLog log) async {
+    final hook = beforeUpsertLog;
+    if (hook != null) {
+      beforeUpsertLog = null;
+      await hook();
+    }
     logs[log.id!] = log;
     return log;
   }
@@ -138,5 +144,19 @@ void main() {
     await manager.drain();
     final ops = await queue.all();
     expect(ops.single.error, isNotNull);
+  });
+
+  test('coalesces: an op enqueued + drain() requested mid-drain is processed in the same cycle', () async {
+    // While applying log-1, simulate SupabaseService.trySync: enqueue a new op
+    // and call drain() reentrantly. Coalescing must run a follow-up pass that
+    // applies log-2 rather than stranding it.
+    remote.beforeUpsertLog = () async {
+      await queue.enqueue(_createLogOp("log-2"));
+      await manager.drain(); // reentrant — hits the _draining guard
+    };
+    await queue.enqueue(_createLogOp("log-1"));
+    await manager.drain();
+    expect(remote.logs.keys.toSet(), {"log-1", "log-2"});
+    expect(await queue.count(), 0);
   });
 }
