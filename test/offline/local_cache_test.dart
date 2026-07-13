@@ -1,4 +1,5 @@
 // test/offline/local_cache_test.dart
+import 'package:bughive/app/models/attachment.dart';
 import 'package:bughive/app/models/engineering_log.dart';
 import 'package:bughive/app/models/repository.dart';
 import 'package:bughive/app/services/offline/key_value_store.dart';
@@ -42,5 +43,23 @@ void main() {
     await cache.upsertLog(_log("l1", "r1", "x"));
     await cache.removeLog(_log("l1", "r1", "x"));
     expect(await cache.readLogs("r1"), isEmpty);
+  });
+
+  test('upsertLog throws on null id (prevents silent collision)', () async {
+    expect(
+      () => cache.upsertLog(EngineeringLog(
+        repoId: "r1", userId: "u1", title: "t", description: "d",
+        type: EngineeringLogType.bug, severity: Severity.medium,
+        environment: "e", labels: const [],
+      )),
+      throwsArgumentError,
+    );
+  });
+
+  test('upsertAttachment throws on null id', () async {
+    expect(
+      () => cache.upsertAttachment(const Attachment(logId: "l1", fileUrl: "x")),
+      throwsArgumentError,
+    );
   });
 }

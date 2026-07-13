@@ -38,6 +38,10 @@ class LocalCache {
       _logsKey(repoId), logs.map((l) => l.toSupabaseJson()).toList());
 
   Future<void> upsertLog(EngineeringLog log) async {
+    if (log.id == null) {
+      throw ArgumentError.value(
+          log.id, 'log.id', 'LocalCache.upsertLog requires a non-null log id');
+    }
     final logs = await readLogs(log.repoId);
     final next = [
       log,
@@ -61,6 +65,10 @@ class LocalCache {
           items.map((a) => a.toSupabaseJson()).toList());
 
   Future<void> upsertAttachment(Attachment attachment) async {
+    if (attachment.id == null) {
+      throw ArgumentError.value(attachment.id, 'attachment.id',
+          'LocalCache.upsertAttachment requires a non-null attachment id');
+    }
     final items = await readAttachments(attachment.logId);
     final next = [
       attachment,
