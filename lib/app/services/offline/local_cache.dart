@@ -78,9 +78,17 @@ class LocalCache {
   }
 
   Future<void> clear() async {
+    final repos = await readRepos();
+    for (final repo in repos) {
+      final repoId = repo.id;
+      if (repoId == null) continue;
+      final logs = await readLogs(repoId);
+      for (final log in logs) {
+        final logId = log.id;
+        if (logId != null) await _store.delete(_attachmentsKey(logId));
+      }
+      await _store.delete(_logsKey(repoId));
+    }
     await _store.delete(_reposKey());
-    // Log/attachment buckets are keyed per repo/log; callers that need a full
-    // wipe should re-fetch after clear(). For sign-out we also clear the queue
-    // and rely on fresh login re-populating caches.
   }
 }

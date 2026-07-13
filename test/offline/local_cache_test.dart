@@ -62,4 +62,16 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test('clear cascades: wipes repos, per-repo logs, and per-log attachments', () async {
+    await cache.writeRepos([
+      const Repository(id: "r1", githubRepoId: 1, owner: "o", name: "n", url: "u"),
+    ]);
+    await cache.upsertLog(_log("l1", "r1", "t"));
+    await cache.upsertAttachment(const Attachment(id: "a1", logId: "l1", fileUrl: "u"));
+    await cache.clear();
+    expect(await cache.readRepos(), isEmpty);
+    expect(await cache.readLogs("r1"), isEmpty);
+    expect(await cache.readAttachments("l1"), isEmpty);
+  });
 }

@@ -4,10 +4,18 @@ import '/app/models/attachment.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
 import '/app/models/user.dart';
+import '/app/services/offline/connectivity_service.dart';
+import '/app/services/offline/local_cache.dart';
+import '/app/services/offline/offline_runtime.dart';
 import '/app/services/offline/remote_data_source.dart';
+import '/app/services/offline/sync_manager.dart';
+import '/app/services/offline/sync_operation.dart';
+import '/app/services/offline/sync_queue.dart';
 import '/config/app.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
+import 'package:uuid/uuid.dart';
 
 class SupabaseServiceException implements Exception {
   final String message;
@@ -33,12 +41,42 @@ class LogCounts {
 }
 
 class SupabaseService {
+  SupabaseService({
+    RemoteDataSource? remote,
+    ConnectivityService? connectivity,
+    LocalCache? cache,
+    SyncQueue? queue,
+    SyncManager? syncManager,
+  })  : _injectedRemote = remote,
+        _injectedConnectivity = connectivity,
+        _injectedCache = cache,
+        _injectedQueue = queue,
+        _injectedManager = syncManager;
+
   static bool _initialized = false;
   static String? _configurationError;
   static const _secureStorage = FlutterSecureStorage();
   static bool _githubTokenListenerAttached = false;
+  static const _uuid = Uuid();
 
-  final RemoteDataSource _remote = SupabaseRemote();
+  final RemoteDataSource? _injectedRemote;
+  final ConnectivityService? _injectedConnectivity;
+  final LocalCache? _injectedCache;
+  final SyncQueue? _injectedQueue;
+  final SyncManager? _injectedManager;
+
+  String get _uid => currentUserId ?? "anon";
+  RemoteDataSource get _remote => _injectedRemote ?? OfflineRuntime.instance.remote;
+  ConnectivityService get _connectivity =>
+      _injectedConnectivity ?? OfflineRuntime.instance.connectivity;
+  LocalCache get _cache => _injectedCache ?? OfflineRuntime.instance.cacheFor(_uid);
+  SyncQueue get _queue => _injectedQueue ?? OfflineRuntime.instance.queueFor(_uid);
+  SyncManager get _manager =>
+      _injectedManager ?? OfflineRuntime.instance.managerFor(_uid);
+
+  Future<void> _trySync() async {
+    if (_connectivity.isOnline) await _manager.drain();
+  }
 
   static String _githubTokenKey(String userId) =>
       "github_provider_token_$userId";
@@ -171,6 +209,8 @@ class SupabaseService {
     if (userId != null) {
       await _secureStorage.delete(key: _githubTokenKey(userId));
     }
+    await _queue.clear();
+    await _cache.clear();
     if (!_initialized) return;
     try {
       // Global scope revokes the refresh token server-side across all devices.
@@ -235,6 +275,8 @@ class SupabaseService {
 
     await _client.from("profiles").delete().eq("id", userId);
     await _secureStorage.delete(key: _githubTokenKey(userId));
+    await _queue.clear();
+    await _cache.clear();
   }
 
   String? _storagePathFromPublicUrl(String? url) {
@@ -259,10 +301,53 @@ class SupabaseService {
     return User.fromJson(Map<String, dynamic>.from(response));
   }
 
-  Future<List<Repository>> fetchRepositories() => _remote.fetchRepositories();
+  static const _networkTimeout = Duration(seconds: 8);
 
-  Future<LogCounts> fetchLogCounts(String repoId) =>
-      _remote.fetchLogCounts(repoId);
+  Future<List<Repository>> fetchRepositories() async {
+    if (!_connectivity.isOnline) return _cache.readRepos();
+    try {
+      final repos = await _remote.fetchRepositories().timeout(_networkTimeout);
+      await _cache.writeRepos(repos);
+      return repos;
+    } catch (_) {
+      return _cache.readRepos();
+    }
+  }
+
+  Future<LogCounts> fetchLogCounts(String repoId) async {
+    if (!_connectivity.isOnline) {
+      return _computeLogCounts(await _cache.readLogs(repoId));
+    }
+    try {
+      return await _remote.fetchLogCounts(repoId).timeout(_networkTimeout);
+    } catch (_) {
+      return _computeLogCounts(await _cache.readLogs(repoId));
+    }
+  }
+
+  /// Mirrors SupabaseRemote.fetchLogCounts' field semantics exactly so
+  /// online and offline counts always agree.
+  LogCounts _computeLogCounts(List<EngineeringLog> logs) {
+    final synced =
+        logs.where((log) => log.syncStatus != SyncStatus.local).length;
+    return LogCounts(
+      total: logs.length,
+      local: logs.length - synced,
+      synced: synced,
+      latestGithubSync: _latestGithubSync(logs),
+    );
+  }
+
+  DateTime? _latestGithubSync(List<EngineeringLog> logs) {
+    DateTime? latest;
+    for (final log in logs) {
+      if (log.githubIssueNumber == null) continue;
+      final syncedAt = log.updatedAt ?? log.createdAt;
+      if (syncedAt == null) continue;
+      if (latest == null || syncedAt.isAfter(latest)) latest = syncedAt;
+    }
+    return latest;
+  }
 
   Future<Repository> saveRepository(Repository repository) =>
       _remote.saveRepository(repository);
@@ -276,16 +361,57 @@ class SupabaseService {
   Future<List<EngineeringLog>> fetchEngineeringLogs(
     String repoId, {
     SyncStatus? status,
-  }) => _remote.fetchEngineeringLogs(repoId, status: status);
+  }) async {
+    if (!_connectivity.isOnline) {
+      final cached = await _cache.readLogs(repoId);
+      return _filter(cached, status);
+    }
+    try {
+      // Always fetch the full set online so the cache holds everything;
+      // filtering happens client-side (also applied to cached reads).
+      final logs =
+          await _remote.fetchEngineeringLogs(repoId).timeout(_networkTimeout);
+      await _cache.writeLogs(repoId, logs);
+      return _filter(logs, status);
+    } catch (_) {
+      return _filter(await _cache.readLogs(repoId), status);
+    }
+  }
 
-  Future<EngineeringLog> createEngineeringLog(EngineeringLog log) =>
-      _remote.upsertLog(log);
+  List<EngineeringLog> _filter(List<EngineeringLog> logs, SyncStatus? status) {
+    if (status == null) return logs;
+    if (status == SyncStatus.synced) {
+      return logs.where((l) => l.syncStatus != SyncStatus.local).toList();
+    }
+    return logs.where((l) => l.syncStatus == status).toList();
+  }
 
-  Future<EngineeringLog> updateEngineeringLog(EngineeringLog log) {
+  Future<EngineeringLog> createEngineeringLog(EngineeringLog log) async {
+    final withId = log.id == null ? log.copyWith(id: _uuid.v4()) : log;
+    await _cache.upsertLog(withId);
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.createLog,
+      payload: withId.toSupabaseJson(),
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
+    return withId;
+  }
+
+  Future<EngineeringLog> updateEngineeringLog(EngineeringLog log) async {
     if (log.id == null) {
       throw const SupabaseServiceException("Log must be saved first.");
     }
-    return _remote.upsertLog(log);
+    await _cache.upsertLog(log);
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.updateLog,
+      payload: log.toSupabaseJson(),
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
+    return log;
   }
 
   Future<EngineeringLog> markLogSynced({
@@ -297,24 +423,82 @@ class SupabaseService {
       _remote.markLogFinished(log);
 
   Future<void> deleteEngineeringLog(EngineeringLog log) async {
-    if (log.id == null) return;
-    await _remote.deleteLog(log.id!);
+    final id = log.id;
+    if (id == null) return;
+    await _cache.removeLog(log);
+    if (await _queue.hasPendingCreate(id)) {
+      // Never synced — cancel the queued create instead of enqueuing a
+      // delete that the remote has no row for.
+      await _queue.cancelCreateFor(id);
+      return;
+    }
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.deleteLog,
+      payload: {"id": id},
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
   }
 
-  Future<Attachment> createAttachment(Attachment attachment) =>
-      _remote.upsertAttachment(attachment);
+  Future<Attachment> createAttachment(Attachment attachment) async {
+    final withId = attachment.id == null
+        ? Attachment(
+            id: _uuid.v4(),
+            logId: attachment.logId,
+            fileUrl: attachment.fileUrl,
+          )
+        : attachment;
+    await _cache.upsertAttachment(withId);
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.createAttachment,
+      payload: withId.toSupabaseJson(),
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
+    return withId;
+  }
 
-  Future<List<Attachment>> fetchAttachments(String logId) =>
-      _remote.fetchAttachments(logId);
+  Future<List<Attachment>> fetchAttachments(String logId) async {
+    if (!_connectivity.isOnline) return _cache.readAttachments(logId);
+    try {
+      final attachments =
+          await _remote.fetchAttachments(logId).timeout(_networkTimeout);
+      await _cache.writeAttachments(logId, attachments);
+      return attachments;
+    } catch (_) {
+      return _cache.readAttachments(logId);
+    }
+  }
 
   Future<Attachment> uploadScreenshot({
     required String logId,
     required File file,
-  }) {
-    // Temporary: generate an id here until Task 6 introduces UUIDs and moves
-    // this id generation into the caller/queue.
-    final id = DateTime.now().microsecondsSinceEpoch.toString();
-    return _remote.uploadScreenshot(logId: logId, attachmentId: id, file: file);
+  }) async {
+    final attachmentId = _uuid.v4();
+    final localPath = await _persistPendingFile(file, attachmentId);
+    final attachment =
+        Attachment(id: attachmentId, logId: logId, fileUrl: localPath);
+    await _cache.upsertAttachment(attachment);
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.createAttachment,
+      payload: attachment.toSupabaseJson(),
+      localFilePath: localPath,
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
+    return attachment;
+  }
+
+  Future<String> _persistPendingFile(File file, String attachmentId) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final destDir = Directory("${dir.path}/pending_attachments");
+    if (!destDir.existsSync()) destDir.createSync(recursive: true);
+    final dest = "${destDir.path}/$attachmentId.png";
+    await file.copy(dest);
+    return dest;
   }
 
   User _profileFromSession(supabase.Session session) {
