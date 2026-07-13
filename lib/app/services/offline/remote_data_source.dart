@@ -4,7 +4,7 @@ import '/app/models/attachment.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
 import '/app/services/supabase_service.dart'
-    show LogCounts, SupabaseServiceException;
+    show LogCounts, SupabaseServiceException, SupabaseService;
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
 
 abstract class RemoteDataSource {
@@ -34,10 +34,16 @@ abstract class RemoteDataSource {
 }
 
 class SupabaseRemote implements RemoteDataSource {
-  supabase.SupabaseClient get _client => supabase.Supabase.instance.client;
+  supabase.SupabaseClient get _client {
+    if (!SupabaseService.isInitialized) {
+      throw const SupabaseServiceException("Supabase is not configured.");
+    }
+    return supabase.Supabase.instance.client;
+  }
 
-  String? get _currentUserId =>
-      supabase.Supabase.instance.client.auth.currentSession?.user.id;
+  String? get _currentUserId => SupabaseService.isInitialized
+      ? supabase.Supabase.instance.client.auth.currentSession?.user.id
+      : null;
 
   List<Map<String, dynamic>> _rows(dynamic response) {
     if (response is! List) return const [];
