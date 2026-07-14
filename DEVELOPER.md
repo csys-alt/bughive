@@ -4,6 +4,8 @@ Mobile-first engineering logbook. Capture debugging notes, structure bug reports
 
 **Not a Jira replacement.** The app captures engineering context *before* an issue exists.
 
+**Status:** Release candidate (v1.0.0), stable. **GitHub login is the only auth path** — offline mode was removed entirely (commits `cb3db34`, `be92362`). See `RELEASE.md` for the signed-APK build & GitHub Release flow.
+
 ---
 
 ## Quick Start
@@ -17,7 +19,7 @@ flutter pub get
 cp .env-example .env
 # Fill in SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY
 # Run the Nylo env generator:
-dart run nylo_framework:main env:gen
+dart run nylo_framework:main make:env
 
 # 3. Supabase
 # Paste SUPABASE_SETUP.md SQL into Supabase SQL Editor → Run
@@ -35,13 +37,14 @@ flutter run
 | `SUPABASE_URL` | **Yes** | `https://<ref>.supabase.co` |
 | `SUPABASE_PUBLISHABLE_KEY` | **Yes** | Supabase anon key (never service role) |
 | `GITHUB_OAUTH_REDIRECT_URL` | Yes | `bughive://auth-callback` — must match Supabase Auth redirect list |
-| `APP_ENV` | No | `developing` or `production` (controls Supabase debug logs) |
+| `APP_ENV` | No | `developing` or `production` (controls Supabase debug logs). Set to `production` for release builds |
+| `APP_DEBUG` | No | `true`/`false`. Set to `false` for release builds |
 | `SHOW_SPLASH_SCREEN` | No | `true`/`false` |
 
 After editing `.env`, regenerate the encrypted env file:
 
 ```bash
-dart run nylo_framework:main env:gen
+dart run nylo_framework:main make:env
 ```
 
 ---
@@ -75,7 +78,7 @@ lib/
 ├── app/
 │   ├── controllers/
 │   │   ├── controller.dart            # Base (empty)
-│   │   ├── auth_controller.dart       # Login, logout, offline mode
+│   │   ├── auth_controller.dart       # GitHub login, logout, reconnect, account deletion
 │   │   ├── home_controller.dart       # Workspace data loading
 │   │   ├── github_controller.dart     # GitHub ↔ Supabase sync orchestration
 │   │   └── log_controller.dart        # Log CRUD + sync + attachments
@@ -85,7 +88,7 @@ lib/
 │   │   ├── engineering_log.dart       # Core log + enums
 │   │   └── attachment.dart            # Screenshot metadata
 │   ├── services/
-│   │   ├── supabase_service.dart      # All Supabase + offline storage ops
+│   │   ├── supabase_service.dart      # All Supabase ops (auth, DB, storage) + secure GitHub-token cache
 │   │   └── github_service.dart        # GitHub REST API wrapper (Dio)
 │   └── providers/                     # Nylo boot providers (mostly boilerplate)
 ├── bootstrap/
@@ -117,7 +120,7 @@ The core domain object.
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | `String?` | UUID from Supabase or `local_*` prefix offline |
+| `id` | `String?` | UUID from Supabase |
 | `repoId` | `String` | FK → repositories |
 | `userId` | `String` | FK → profiles |
 | `title` | `String` | Issue title |
@@ -173,10 +176,9 @@ The core domain object.
 
 ### `SupabaseService` — the data layer
 
-Every data operation goes through this service. It transparently handles two modes:
-
-- **Online:** Reads/writes Supabase PostgreSQL + Storage.
-- **Offline:** Reads/writes NyStorage JSON with `local_*`-prefixed IDs.
+Every data operation goes through this service. It is **online-only** — the app
+requires a live Supabase session (GitHub login). There is no offline/local
+storage fallback.
 
 #### Supabase Tables Touched
 
@@ -192,19 +194,19 @@ Every data operation goes through this service. It transparently handles two mod
 
 | Method | What |
 |---|---|
-| `signInWithGithub()` | OAuth with scopes: `repo read:user user:email` |
-| `startOfflineMode()` | Sets flag in NyStorage, returns dummy profile |
-| `signOut()` | Clears offline data + Supabase session |
-| `currentGithubAccessToken` | From `session.providerToken` — needed for GitHub API |
+| `signInWithGithub()` | OAuth with scopes: `repo read:user user:email notifications` |
+| `signOut()` | Global sign-out (revokes refresh token server-side across devices); falls back to local sign-out if offline. Clears the cached GitHub token |
+| `deleteCloudAccountData()` | Permanently deletes this account's storage files + `profiles` row (cascades to repositories/logs/attachments) + cached token |
+| `getGithubAccessToken()` | Prefers live `session.providerToken`; falls back to the token cached in secure storage (Supabase doesn't restore `providerToken` across app restarts) |
+| `clearGithubAccessToken()` | Deletes the cached token for the current user |
 
-#### Offline Storage Keys
+#### GitHub Token Caching
 
-| Key | Content |
-|---|---|
-| `BUGHIVE_OFFLINE_MODE` | `bool` |
-| `BUGHIVE_OFFLINE_REPOSITORIES` | JSON list of repos |
-| `BUGHIVE_OFFLINE_LOGS` | JSON list of logs |
-| `BUGHIVE_OFFLINE_ATTACHMENTS` | JSON list of attachments |
+The GitHub OAuth access token is cached in `flutter_secure_storage` (Android
+Keystore), keyed per user. This is necessary because Supabase only exposes
+`session.providerToken` immediately after sign-in, not across app restarts —
+so the token is persisted on the `SIGNED_IN` event and read back for later
+GitHub API calls.
 
 ### `GithubService` — GitHub REST API wrapper
 
@@ -233,10 +235,11 @@ Controllers are the orchestration layer between pages and services.
 | Method | Flow |
 |---|---|
 | `continueWithGithub()` | → `supabase.signInWithGithub()` (opens browser) |
-| `continueWithoutGithub()` | → `supabase.startOfflineMode()` → navigate to HomePage |
+| `reconnectGithub()` | Clears the known-bad cached token → re-runs `signInWithGithub()` (used when a token becomes invalid) |
 | `loadProfile()` | → `supabase.loadProfile()` |
 | `listenForSignedIn(cb)` | Subscribes to `supabase.authStateChanges` stream |
 | `signOut()` | → `supabase.signOut()` → navigate to LoginPage |
+| `deleteAccount()` | → `supabase.deleteCloudAccountData()` → `signOut()` |
 
 ### `HomeController`
 
@@ -275,13 +278,13 @@ The heaviest controller — all GitHub ↔ Supabase sync lives here.
 
 | Route | Page | Controller | Purpose |
 |---|---|---|---|
-| `/login` (initial) | `LoginPage` | `AuthController` | GitHub OAuth or offline entry |
+| `/login` (initial) | `LoginPage` | `AuthController` | GitHub OAuth (only auth path) |
 | `/home` | `HomePage` | `HomeController` | Repo workspace list |
 | `/repositories/add` | `AddRepositoryPage` | `GithubController` | Add repo by URL |
 | `/repository` | `RepositoryDetailPage` | `LogController` | Log list with tabs: All / Open / Finished |
 | `/logs/create` | `CreateLogPage` | `LogController` | Full log form + attachments |
 | `/logs/detail` | `LogDetailPage` | `LogController` | View/edit log + sync/close/delete |
-| `/profile` | `ProfilePage` | `AuthController` | User info + logout + data erasure |
+| `/profile` | `ProfilePage` | `AuthController` | User info + logout + full account deletion |
 | `/not-found` | `NotFoundPage` | — | Fallback |
 
 **Navigation pattern:** Pages push with `routeTo()` and reload data on `pop` using `.then((_) => _load())`.
@@ -371,7 +374,7 @@ LOCAL  ──(user taps "Sync GitHub")──→  SYNCED  ──(user closes issu
 
 - **Dark mode only.** `Main` widget hardcodes `ThemeMode.dark`.
 - **Font:** JetBrains Mono everywhere (via `google_fonts`).
-- **Local IDs** use `local_` prefix — checked by `_isLocalId()` to route offline vs online.
+- **Online-only.** All IDs are Supabase UUIDs; a new log lives in the DB with `sync_status = LOCAL` until pushed to GitHub (there is no on-device local store).
 - **Swipe-to-delete** is two-step: first swipe shows confirm overlay, second swipe executes.
 - **Error handling:** Services throw typed exceptions (`GithubServiceException`, `SupabaseServiceException`). Controllers catch and surface to UI via toast or inline error state.
 - **No ORM.** Models do manual `fromJson`/`toSupabaseJson` with `_dateValue`/`_intValue` helpers.
@@ -385,7 +388,6 @@ LOCAL  ──(user taps "Sync GitHub")──→  SYNCED  ──(user closes issu
 
 1. Add field to model class + `fromJson` + `toSupabaseJson` + `copyWith`
 2. Add column in Supabase SQL editor
-3. If offline-relevant, update the `_*Json()` serializer in `supabase_service.dart`
 
 ### Add a new page
 
@@ -402,7 +404,7 @@ LOCAL  ──(user taps "Sync GitHub")──→  SYNCED  ──(user closes issu
 ### Regenerate env after editing `.env`
 
 ```bash
-dart run nylo_framework:main env:gen
+dart run nylo_framework:main make:env
 ```
 
 This produces `lib/bootstrap/env.g.dart` — **never edit that file manually**.

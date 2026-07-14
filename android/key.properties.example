@@ -6,9 +6,10 @@
 #   keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA \
 #     -keysize 2048 -validity 10000 -alias upload
 #
-# Then point storeFile at it (absolute path, or relative to android/app).
+# storeFile: use FORWARD slashes even on Windows (a .properties file treats
+# backslash as an escape character), e.g. C:/Users/you/upload-keystore.jks
 
 storePassword=your-store-password
 keyPassword=your-key-password
 keyAlias=upload
-storeFile=/absolute/path/to/upload-keystore.jks
+storeFile=C:/absolute/path/to/upload-keystore.jks
