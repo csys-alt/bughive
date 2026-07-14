@@ -380,8 +380,10 @@ class SupabaseService {
 
   List<EngineeringLog> _filter(List<EngineeringLog> logs, SyncStatus? status) {
     if (status == null) return logs;
-    if (status == SyncStatus.synced) {
-      return logs.where((l) => l.syncStatus != SyncStatus.local).toList();
+    // ponytail: Open tab reuses SyncStatus.local as sentinel for "not closed";
+    // if we add a 4th status later, introduce a separate FilterMode enum.
+    if (status == SyncStatus.local) {
+      return logs.where((l) => l.syncStatus != SyncStatus.closed).toList();
     }
     return logs.where((l) => l.syncStatus == status).toList();
   }

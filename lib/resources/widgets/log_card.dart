@@ -8,8 +8,6 @@ class LogCard extends StatelessWidget {
   final EngineeringLog log;
   final VoidCallback? onSync;
   final VoidCallback? onTap;
-  final VoidCallback? onCancelDelete;
-  final bool confirmDelete;
   final bool pendingSync;
 
   const LogCard({
@@ -17,8 +15,6 @@ class LogCard extends StatelessWidget {
     required this.log,
     this.onSync,
     this.onTap,
-    this.onCancelDelete,
-    this.confirmDelete = false,
     this.pendingSync = false,
   });
 
@@ -28,27 +24,14 @@ class LogCard extends StatelessWidget {
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: BorderSide(
-          color: confirmDelete
-              ? const Color(0xFF6D2A2A)
-              : const Color(0xFF30302E),
-        ),
+        side: const BorderSide(color: Color(0xFF30302E)),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: confirmDelete
-              ? Stack(
-                  children: [
-                    IgnorePointer(
-                      child: Opacity(opacity: 0, child: _content(context)),
-                    ),
-                    Positioned.fill(child: _confirmContent(context)),
-                  ],
-                )
-              : _content(context),
+          child: _content(context),
         ),
       ),
     );
@@ -116,36 +99,6 @@ class LogCard extends StatelessWidget {
                 .toList(growable: false),
           ),
         ],
-      ],
-    );
-  }
-
-  Widget _confirmContent(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Center(
-            child: Text(
-              log.githubIssueNumber == null
-                  ? "Tap this card again to remove the issue."
-                  : "Tap this card again to close GitHub #${log.githubIssueNumber} and remove it.",
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: const Color(0xFFFFB4B4),
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0,
-              ),
-            ),
-          ),
-        ),
-        if (onCancelDelete != null)
-          IconButton(
-            tooltip: "Cancel delete",
-            onPressed: onCancelDelete,
-            icon: const Icon(Icons.close, size: 18),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-          ),
       ],
     );
   }
