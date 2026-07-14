@@ -4,11 +4,14 @@ import '/app/controllers/log_controller.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
 import '/app/services/github_service.dart';
+import '/app/services/offline/offline_runtime.dart';
+import '/app/services/supabase_service.dart';
 import '/resources/pages/create_log_page.dart';
 import '/resources/pages/log_detail_page.dart';
 import '/resources/widgets/github_reconnect_banner.dart';
 import '/resources/widgets/loader_widget.dart';
 import '/resources/widgets/log_card.dart';
+import '/resources/widgets/offline_banner.dart';
 import 'package:flutter/material.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
@@ -28,6 +31,7 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
   String? _syncingId;
   String? _confirmDeleteLogId;
   List<EngineeringLog> _logs = const [];
+  Set<String> _pendingIds = const {};
 
   @override
   get init => () async {
@@ -67,9 +71,15 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
         repository,
         status: _filter,
       );
+      // Refresh pending ids for the badge.
+      final uid = SupabaseService().currentUserId;
+      final pendingIds = uid != null
+          ? await OfflineRuntime.instance.queueFor(uid).pendingLogIds()
+          : const <String>{};
       if (!mounted) return;
       setState(() {
         _logs = logs;
+        _pendingIds = pendingIds;
         _confirmDeleteLogId = null;
         _loading = false;
       });
@@ -193,7 +203,14 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
                 icon: const Icon(Icons.add),
                 label: const Text("New Log"),
               ),
-        body: SafeArea(child: _body(context)),
+        body: SafeArea(
+          child: Column(
+            children: [
+              OfflineBanner(connectivity: OfflineRuntime.instance.connectivity),
+              Expanded(child: _body(context)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -268,6 +285,7 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
                       onSync: _syncingId == log.id || log.isSynced
                           ? null
                           : () => _syncLog(log),
+                      pendingSync: _pendingIds.contains(log.id),
                     ),
                   ),
           );

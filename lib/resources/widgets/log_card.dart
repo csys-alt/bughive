@@ -10,6 +10,7 @@ class LogCard extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onCancelDelete;
   final bool confirmDelete;
+  final bool pendingSync;
 
   const LogCard({
     super.key,
@@ -18,6 +19,7 @@ class LogCard extends StatelessWidget {
     this.onTap,
     this.onCancelDelete,
     this.confirmDelete = false,
+    this.pendingSync = false,
   });
 
   @override
@@ -100,6 +102,8 @@ class LogCard extends StatelessWidget {
             _StatusBadge(status: log.syncStatus),
             if (log.githubIssueNumber != null)
               _TextBadge(label: "GitHub #${log.githubIssueNumber}"),
+            if (pendingSync)
+              const _PendingSyncBadge(),
           ],
         ),
         if (log.labels.isNotEmpty) ...[
@@ -234,6 +238,31 @@ class _TextBadge extends StatelessWidget {
         label,
         style: const TextStyle(
           color: Color(0xFFB8B5B0),
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0,
+        ),
+      ),
+    );
+  }
+}
+
+class _PendingSyncBadge extends StatelessWidget {
+  const _PendingSyncBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF3B3321),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFF6B5722)),
+      ),
+      child: const Text(
+        "Pending sync",
+        style: TextStyle(
+          color: Color(0xFFE1C16E),
           fontSize: 11,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,

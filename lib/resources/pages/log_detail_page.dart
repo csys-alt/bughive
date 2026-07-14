@@ -4,6 +4,7 @@ import '/app/controllers/log_controller.dart';
 import '/app/models/attachment.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
+import '/app/services/offline/offline_runtime.dart';
 import '/resources/widgets/dark_dropdown_field.dart';
 import '/resources/widgets/github_label_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -36,6 +37,7 @@ class _LogDetailPageState extends NyPage<LogDetailPage> {
   bool _busy = false;
   bool _editing = false;
   bool _syncingGithub = false;
+  bool _online = true;
 
   @override
   get init => () async {
@@ -43,6 +45,11 @@ class _LogDetailPageState extends NyPage<LogDetailPage> {
     _log = _args!.log;
     _syncControllers();
     _attachments = await widget.controller.loadAttachments(_log);
+    final conn = OfflineRuntime.instance.connectivity;
+    _online = conn.isOnline;
+    conn.onStatusChange.listen((online) {
+      if (mounted) setState(() => _online = online);
+    });
   };
 
   @override
@@ -388,7 +395,7 @@ class _LogDetailPageState extends NyPage<LogDetailPage> {
           children: [
             FilledButton.icon(
               onPressed:
-                  _busy || _log.githubIssueNumber == null || _log.isClosed
+                  _busy || !_online || _log.githubIssueNumber == null || _log.isClosed
                   ? null
                   : _markFinished,
               icon: const Icon(Icons.check_circle_outline, size: 18),
@@ -399,7 +406,7 @@ class _LogDetailPageState extends NyPage<LogDetailPage> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: _busy || _log.isClosed ? null : _syncGithub,
+                    onPressed: _busy || !_online || _log.isClosed ? null : _syncGithub,
                     icon: Icon(
                       _syncingGithub ? Icons.hourglass_top : Icons.sync,
                       size: 18,
