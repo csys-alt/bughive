@@ -13,7 +13,7 @@ import '/resources/widgets/loader_widget.dart';
 import '/resources/widgets/log_card.dart';
 import '/resources/widgets/offline_banner.dart';
 import 'package:flutter/material.dart';
-import 'package:nylo_framework/nylo_framework.dart';
+import 'package:nylo_framework/nylo_framework.dart' hide OfflineBanner;
 
 class RepositoryDetailPage extends NyStatefulWidget<LogController> {
   static RouteView path = ("/repository", (_) => RepositoryDetailPage());
