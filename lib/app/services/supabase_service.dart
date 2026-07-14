@@ -292,13 +292,20 @@ class SupabaseService {
     if (session == null) return null;
 
     final profile = _profileFromSession(session);
-    final response = await _client
-        .from("profiles")
-        .upsert(profile.toProfileJson(), onConflict: "id")
-        .select()
-        .single();
-
-    return User.fromJson(Map<String, dynamic>.from(response));
+    // ponytail: offline returns session-derived profile (no avatar upsert);
+    // ceiling: profile row won't be created on first offline launch. Upgrade:
+    // queue a profile upsert op the same way logs are queued.
+    if (!_connectivity.isOnline) return profile;
+    try {
+      final response = await _client
+          .from("profiles")
+          .upsert(profile.toProfileJson(), onConflict: "id")
+          .select()
+          .single();
+      return User.fromJson(Map<String, dynamic>.from(response));
+    } catch (_) {
+      return profile;
+    }
   }
 
   static const _networkTimeout = Duration(seconds: 8);
