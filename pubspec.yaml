@@ -1,9 +1,9 @@
 name: bughive
 description: A mobile-first engineering logbook for developers and QA engineers.
 
-publish_to: 'none'
+publish_to: "none"
 
-version: 1.0.0+1
+version: 1.0.0
 
 environment:
   sdk: ^3.10.7
@@ -19,6 +19,9 @@ dependencies:
   font_awesome_flutter: ^11.0.0
   url_launcher: ^6.3.2
   flutter_secure_storage: ^10.3.1
+  connectivity_plus: ^7.1.1
+  path_provider: ^2.1.5
+  uuid: ^4.5.1
   flutter:
     sdk: flutter
   flutter_localizations:
@@ -39,8 +42,6 @@ flutter_launcher_icons:
   remove_alpha_ios: true
 
 flutter:
-
-
   uses-material-design: true
 
   assets:

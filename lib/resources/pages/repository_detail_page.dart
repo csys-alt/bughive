@@ -4,13 +4,16 @@ import '/app/controllers/log_controller.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
 import '/app/services/github_service.dart';
+import '/app/services/offline/offline_runtime.dart';
+import '/app/services/supabase_service.dart';
 import '/resources/pages/create_log_page.dart';
 import '/resources/pages/log_detail_page.dart';
 import '/resources/widgets/github_reconnect_banner.dart';
 import '/resources/widgets/loader_widget.dart';
 import '/resources/widgets/log_card.dart';
+import '/resources/widgets/offline_banner.dart';
 import 'package:flutter/material.dart';
-import 'package:nylo_framework/nylo_framework.dart';
+import 'package:nylo_framework/nylo_framework.dart' hide OfflineBanner;
 
 class RepositoryDetailPage extends NyStatefulWidget<LogController> {
   static RouteView path = ("/repository", (_) => RepositoryDetailPage());
@@ -26,8 +29,8 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
   bool _loading = true;
   String? _error;
   String? _syncingId;
-  String? _confirmDeleteLogId;
   List<EngineeringLog> _logs = const [];
+  Set<String> _pendingIds = const {};
 
   @override
   get init => () async {
@@ -67,10 +70,15 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
         repository,
         status: _filter,
       );
+      // Refresh pending ids for the badge.
+      final uid = SupabaseService().currentUserId;
+      final pendingIds = uid != null
+          ? await OfflineRuntime.instance.queueFor(uid).pendingLogIds()
+          : const <String>{};
       if (!mounted) return;
       setState(() {
         _logs = logs;
-        _confirmDeleteLogId = null;
+        _pendingIds = pendingIds;
         _loading = false;
       });
     } catch (error) {
@@ -135,25 +143,6 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
     );
   }
 
-  Future<bool> _deleteLog(EngineeringLog log) async {
-    final repository = _repository;
-    if (repository == null) return false;
-
-    try {
-      await widget.controller.deleteLog(repository: repository, log: log);
-      return true;
-    } on GithubReauthRequiredException catch (error) {
-      if (!mounted) return false;
-      _showReauthSnackBar(error);
-      return false;
-    } catch (error) {
-      if (!mounted) return false;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error.toString())));
-      return false;
-    }
-  }
 
   @override
   Widget view(BuildContext context) {
@@ -168,7 +157,7 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
             onTap: (index) {
               _filter = switch (index) {
                 1 => SyncStatus.local,
-                2 => SyncStatus.synced,
+                2 => SyncStatus.closed,
                 _ => null,
               };
               _loadLogs();
@@ -193,7 +182,14 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
                 icon: const Icon(Icons.add),
                 label: const Text("New Log"),
               ),
-        body: SafeArea(child: _body(context)),
+        body: SafeArea(
+          child: Column(
+            children: [
+              OfflineBanner(connectivity: OfflineRuntime.instance.connectivity),
+              Expanded(child: _body(context)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -220,56 +216,22 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
         itemBuilder: (context, index) {
           final log = _logs[index];
-          return AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            child: _confirmDeleteLogId == log.id
-                ? Dismissible(
-                    key: ValueKey("confirm-${log.id ?? log.title}"),
-                    direction: DismissDirection.horizontal,
-                    background: const _CancelBackground(),
-                    secondaryBackground: const _DeleteBackground(),
-                    confirmDismiss: (direction) async {
-                      if (direction == DismissDirection.startToEnd) {
-                        setState(() => _confirmDeleteLogId = null);
-                        return false;
-                      }
-                      await _confirmDeleteLog(log);
-                      return false;
-                    },
-                    child: LogCard(
-                      log: log,
-                      confirmDelete: true,
-                      onCancelDelete: () =>
-                          setState(() => _confirmDeleteLogId = null),
-                      onTap: () => _confirmDeleteLog(log),
-                    ),
-                  )
-                : Dismissible(
-                    key: ValueKey(log.id ?? "${log.title}-${log.createdAt}"),
-                    direction: DismissDirection.endToStart,
-                    background: const _DeleteBackground(),
-                    confirmDismiss: (_) async {
-                      setState(() => _confirmDeleteLogId = log.id);
-                      return false;
-                    },
-                    child: LogCard(
-                      log: log,
-                      onTap: () {
-                        final repository = _repository;
-                        if (repository == null) return;
-                        routeTo(
-                          LogDetailPage.path,
-                          data: LogDetailArgs(repository: repository, log: log),
-                          onPop: (_) => _loadLogs(),
-                        );
-                      },
-                      onSync: _syncingId == log.id || log.isSynced
-                          ? null
-                          : () => _syncLog(log),
-                    ),
-                  ),
+          return LogCard(
+            key: ValueKey(log.id ?? log.title),
+            log: log,
+            onTap: () {
+              final repository = _repository;
+              if (repository == null) return;
+              routeTo(
+                LogDetailPage.path,
+                data: LogDetailArgs(repository: repository, log: log),
+                onPop: (_) => _loadLogs(),
+              );
+            },
+            onSync: _syncingId == log.id || log.isSynced
+                ? null
+                : () => _syncLog(log),
+            pendingSync: _pendingIds.contains(log.id),
           );
         },
         separatorBuilder: (_, index) => const SizedBox(height: 12),
@@ -278,54 +240,9 @@ class _RepositoryDetailPageState extends NyPage<RepositoryDetailPage> {
     );
   }
 
-  Future<void> _confirmDeleteLog(EngineeringLog log) async {
-    final deleted = await _deleteLog(log);
-    if (!mounted) return;
-    if (deleted) {
-      setState(() {
-        _logs = _logs
-            .where((item) => item.id != log.id)
-            .toList(growable: false);
-      });
-    } else {
-      setState(() => _confirmDeleteLogId = null);
-    }
-  }
 }
 
-class _CancelBackground extends StatelessWidget {
-  const _CancelBackground();
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.only(left: 22),
-      decoration: BoxDecoration(
-        color: const Color(0xFF202020),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: const Icon(Icons.close, color: Color(0xFFB8B5B0)),
-    );
-  }
-}
-
-class _DeleteBackground extends StatelessWidget {
-  const _DeleteBackground();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      alignment: Alignment.centerRight,
-      padding: const EdgeInsets.only(right: 22),
-      decoration: BoxDecoration(
-        color: const Color(0xFF3A1D1D),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: const Icon(Icons.delete_outline, color: Color(0xFFFF9A9A)),
-    );
-  }
-}
 
 class _StateBlock extends StatelessWidget {
   final String title;

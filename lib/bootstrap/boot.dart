@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import '/app/services/offline/connectivity_service.dart';
+import '/app/services/offline/key_value_store.dart';
+import '/app/services/offline/offline_runtime.dart';
+import '/app/services/offline/remote_data_source.dart';
 import '/app/services/supabase_service.dart';
 import '/config/app.dart';
 import '/resources/widgets/splash_screen.dart';
@@ -39,6 +43,14 @@ class Boot {
 
 Future<void> _init() async {
   await SupabaseService.initialize();
+
+  final connectivity = ConnectivityPlusService();
+  await connectivity.start();
+  OfflineRuntime.configure(OfflineRuntime(
+    store: NyKeyValueStore(),
+    remote: SupabaseRemote(),
+    connectivity: connectivity,
+  ));
 
   /// Example: Initializing StorageConfig
   // StorageConfig.init(

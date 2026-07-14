@@ -8,16 +8,14 @@ class LogCard extends StatelessWidget {
   final EngineeringLog log;
   final VoidCallback? onSync;
   final VoidCallback? onTap;
-  final VoidCallback? onCancelDelete;
-  final bool confirmDelete;
+  final bool pendingSync;
 
   const LogCard({
     super.key,
     required this.log,
     this.onSync,
     this.onTap,
-    this.onCancelDelete,
-    this.confirmDelete = false,
+    this.pendingSync = false,
   });
 
   @override
@@ -26,27 +24,14 @@ class LogCard extends StatelessWidget {
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: BorderSide(
-          color: confirmDelete
-              ? const Color(0xFF6D2A2A)
-              : const Color(0xFF30302E),
-        ),
+        side: const BorderSide(color: Color(0xFF30302E)),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: confirmDelete
-              ? Stack(
-                  children: [
-                    IgnorePointer(
-                      child: Opacity(opacity: 0, child: _content(context)),
-                    ),
-                    Positioned.fill(child: _confirmContent(context)),
-                  ],
-                )
-              : _content(context),
+          child: _content(context),
         ),
       ),
     );
@@ -100,6 +85,8 @@ class LogCard extends StatelessWidget {
             _StatusBadge(status: log.syncStatus),
             if (log.githubIssueNumber != null)
               _TextBadge(label: "GitHub #${log.githubIssueNumber}"),
+            if (pendingSync)
+              const _PendingSyncBadge(),
           ],
         ),
         if (log.labels.isNotEmpty) ...[
@@ -112,36 +99,6 @@ class LogCard extends StatelessWidget {
                 .toList(growable: false),
           ),
         ],
-      ],
-    );
-  }
-
-  Widget _confirmContent(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Center(
-            child: Text(
-              log.githubIssueNumber == null
-                  ? "Tap this card again to remove the issue."
-                  : "Tap this card again to close GitHub #${log.githubIssueNumber} and remove it.",
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: const Color(0xFFFFB4B4),
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0,
-              ),
-            ),
-          ),
-        ),
-        if (onCancelDelete != null)
-          IconButton(
-            tooltip: "Cancel delete",
-            onPressed: onCancelDelete,
-            icon: const Icon(Icons.close, size: 18),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-          ),
       ],
     );
   }
@@ -234,6 +191,31 @@ class _TextBadge extends StatelessWidget {
         label,
         style: const TextStyle(
           color: Color(0xFFB8B5B0),
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0,
+        ),
+      ),
+    );
+  }
+}
+
+class _PendingSyncBadge extends StatelessWidget {
+  const _PendingSyncBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF3B3321),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFF6B5722)),
+      ),
+      child: const Text(
+        "Pending sync",
+        style: TextStyle(
+          color: Color(0xFFE1C16E),
           fontSize: 11,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,

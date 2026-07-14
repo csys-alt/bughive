@@ -4,6 +4,7 @@ import '/app/controllers/log_controller.dart';
 import '/app/models/attachment.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
+import '/app/services/offline/offline_runtime.dart';
 import '/resources/widgets/dark_dropdown_field.dart';
 import '/resources/widgets/github_label_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -36,6 +37,7 @@ class _LogDetailPageState extends NyPage<LogDetailPage> {
   bool _busy = false;
   bool _editing = false;
   bool _syncingGithub = false;
+  bool _online = true;
 
   @override
   get init => () async {
@@ -43,6 +45,11 @@ class _LogDetailPageState extends NyPage<LogDetailPage> {
     _log = _args!.log;
     _syncControllers();
     _attachments = await widget.controller.loadAttachments(_log);
+    final conn = OfflineRuntime.instance.connectivity;
+    _online = conn.isOnline;
+    conn.onStatusChange.listen((online) {
+      if (mounted) setState(() => _online = online);
+    });
   };
 
   @override
@@ -177,42 +184,6 @@ class _LogDetailPageState extends NyPage<LogDetailPage> {
     }
   }
 
-  Future<void> _deleteLog() async {
-    final args = _args;
-    if (args == null) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Delete issue?"),
-        content: Text(
-          _log.githubIssueNumber == null
-              ? "This removes the issue from BugHive."
-              : "This closes GitHub issue #${_log.githubIssueNumber}, then removes it from BugHive.",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text("Cancel"),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text("Delete"),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    setState(() => _busy = true);
-    try {
-      await widget.controller.deleteLog(repository: args.repository, log: _log);
-      if (!mounted) return;
-      Navigator.of(context).pop(true);
-    } catch (error) {
-      _showError(error);
-    }
-  }
 
   void _showError(Object error) {
     if (!mounted) return;
@@ -388,40 +359,26 @@ class _LogDetailPageState extends NyPage<LogDetailPage> {
           children: [
             FilledButton.icon(
               onPressed:
-                  _busy || _log.githubIssueNumber == null || _log.isClosed
+                  _busy || !_online || _log.githubIssueNumber == null || _log.isClosed
                   ? null
                   : _markFinished,
               icon: const Icon(Icons.check_circle_outline, size: 18),
               label: const Text("Close GitHub issue"),
             ),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _busy || _log.isClosed ? null : _syncGithub,
-                    icon: Icon(
-                      _syncingGithub ? Icons.hourglass_top : Icons.sync,
-                      size: 18,
+            OutlinedButton.icon(
+              onPressed: _busy || !_online || _log.isClosed ? null : _syncGithub,
+              icon: Icon(
+                _syncingGithub ? Icons.hourglass_top : Icons.sync,
+                size: 18,
+              ),
+              label: _syncingGithub
+                  ? const _SyncingText(prefix: "Syncing")
+                  : Text(
+                      _log.githubIssueNumber == null
+                          ? "Sync GitHub"
+                          : "Sync changes",
                     ),
-                    label: _syncingGithub
-                        ? const _SyncingText(prefix: "Syncing")
-                        : Text(
-                            _log.githubIssueNumber == null
-                                ? "Sync GitHub"
-                                : "Sync changes",
-                          ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _busy || _log.isClosed ? null : _deleteLog,
-                    icon: const Icon(Icons.delete_outline, size: 18),
-                    label: const Text("Delete issue"),
-                  ),
-                ),
-              ],
             ),
           ],
         ),

@@ -3,6 +3,7 @@ import 'dart:io';
 import '/app/controllers/log_controller.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
+import '/app/services/offline/offline_runtime.dart';
 import '/resources/widgets/dark_dropdown_field.dart';
 import '/resources/widgets/github_label_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -27,6 +28,7 @@ class _CreateLogPageState extends NyPage<CreateLogPage> {
   List<String> _labels = const [];
   List<String> _attachments = const [];
   bool _saving = false;
+  bool _online = true;
   bool _localSavedAfterSyncFailure = false;
   String? _error;
   String? _syncWarning;
@@ -34,6 +36,11 @@ class _CreateLogPageState extends NyPage<CreateLogPage> {
   @override
   get init => () {
     _repository = widget.controller.data<Repository>();
+    final conn = OfflineRuntime.instance.connectivity;
+    _online = conn.isOnline;
+    conn.onStatusChange.listen((online) {
+      if (mounted) setState(() => _online = online);
+    });
   };
 
   @override
@@ -266,7 +273,7 @@ class _CreateLogPageState extends NyPage<CreateLogPage> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: FilledButton(
-                        onPressed: _saving
+                        onPressed: (_saving || !_online)
                             ? null
                             : () => _submit(syncGithub: true),
                         child: _saving
@@ -282,6 +289,14 @@ class _CreateLogPageState extends NyPage<CreateLogPage> {
                     ),
                   ],
                 ),
+              if (!_online && !_localSavedAfterSyncFailure) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  "Sync to GitHub when you're back online.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Color(0xFFB8B5B0), fontSize: 12),
+                ),
+              ],
             ],
           ),
         ),

@@ -1,5 +1,6 @@
 import '/app/controllers/github_controller.dart';
 import '/app/services/github_service.dart';
+import '/app/services/offline/offline_runtime.dart';
 import '/resources/widgets/github_reconnect_banner.dart';
 import 'package:flutter/material.dart';
 import 'package:nylo_framework/nylo_framework.dart';
@@ -19,6 +20,7 @@ class _AddRepositoryPageState extends NyPage<AddRepositoryPage> {
   bool _saving = false;
   String? _error;
   bool _reauthRequired = false;
+  bool _online = true;
 
   @override
   LoadingStyle get loadingStyle => LoadingStyle.none();
@@ -28,6 +30,15 @@ class _AddRepositoryPageState extends NyPage<AddRepositoryPage> {
     _urlController.dispose();
     super.dispose();
   }
+
+  @override
+  get init => () {
+    final conn = OfflineRuntime.instance.connectivity;
+    _online = conn.isOnline;
+    conn.onStatusChange.listen((online) {
+      if (mounted) setState(() => _online = online);
+    });
+  };
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
@@ -109,7 +120,7 @@ class _AddRepositoryPageState extends NyPage<AddRepositoryPage> {
               ),
               const SizedBox(height: 16),
               FilledButton.icon(
-                onPressed: _saving ? null : _submit,
+                onPressed: (_saving || !_online) ? null : _submit,
                 icon: _saving
                     ? const SizedBox(
                         width: 18,
@@ -119,6 +130,14 @@ class _AddRepositoryPageState extends NyPage<AddRepositoryPage> {
                     : const Icon(Icons.add, size: 18),
                 label: const Text("Add Repository"),
               ),
+              if (!_online) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  "Adding a repository needs a connection.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Color(0xFFB8B5B0), fontSize: 12),
+                ),
+              ],
               if (_reauthRequired) ...[
                 const SizedBox(height: 16),
                 const GithubReconnectBanner(),

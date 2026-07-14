@@ -4,9 +4,18 @@ import '/app/models/attachment.dart';
 import '/app/models/engineering_log.dart';
 import '/app/models/repository.dart';
 import '/app/models/user.dart';
+import '/app/services/offline/connectivity_service.dart';
+import '/app/services/offline/local_cache.dart';
+import '/app/services/offline/offline_runtime.dart';
+import '/app/services/offline/remote_data_source.dart';
+import '/app/services/offline/sync_manager.dart';
+import '/app/services/offline/sync_operation.dart';
+import '/app/services/offline/sync_queue.dart';
 import '/config/app.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
+import 'package:uuid/uuid.dart';
 
 class SupabaseServiceException implements Exception {
   final String message;
@@ -32,10 +41,42 @@ class LogCounts {
 }
 
 class SupabaseService {
+  SupabaseService({
+    RemoteDataSource? remote,
+    ConnectivityService? connectivity,
+    LocalCache? cache,
+    SyncQueue? queue,
+    SyncManager? syncManager,
+  })  : _injectedRemote = remote,
+        _injectedConnectivity = connectivity,
+        _injectedCache = cache,
+        _injectedQueue = queue,
+        _injectedManager = syncManager;
+
   static bool _initialized = false;
   static String? _configurationError;
   static const _secureStorage = FlutterSecureStorage();
   static bool _githubTokenListenerAttached = false;
+  static const _uuid = Uuid();
+
+  final RemoteDataSource? _injectedRemote;
+  final ConnectivityService? _injectedConnectivity;
+  final LocalCache? _injectedCache;
+  final SyncQueue? _injectedQueue;
+  final SyncManager? _injectedManager;
+
+  String get _uid => currentUserId ?? "anon";
+  RemoteDataSource get _remote => _injectedRemote ?? OfflineRuntime.instance.remote;
+  ConnectivityService get _connectivity =>
+      _injectedConnectivity ?? OfflineRuntime.instance.connectivity;
+  LocalCache get _cache => _injectedCache ?? OfflineRuntime.instance.cacheFor(_uid);
+  SyncQueue get _queue => _injectedQueue ?? OfflineRuntime.instance.queueFor(_uid);
+  SyncManager get _manager =>
+      _injectedManager ?? OfflineRuntime.instance.managerFor(_uid);
+
+  Future<void> _trySync() async {
+    if (_connectivity.isOnline) await _manager.drain();
+  }
 
   static String _githubTokenKey(String userId) =>
       "github_provider_token_$userId";
@@ -168,6 +209,8 @@ class SupabaseService {
     if (userId != null) {
       await _secureStorage.delete(key: _githubTokenKey(userId));
     }
+    await _queue.clear();
+    await _cache.clear();
     if (!_initialized) return;
     try {
       // Global scope revokes the refresh token server-side across all devices.
@@ -232,6 +275,8 @@ class SupabaseService {
 
     await _client.from("profiles").delete().eq("id", userId);
     await _secureStorage.delete(key: _githubTokenKey(userId));
+    await _queue.clear();
+    await _cache.clear();
   }
 
   String? _storagePathFromPublicUrl(String? url) {
@@ -247,214 +292,222 @@ class SupabaseService {
     if (session == null) return null;
 
     final profile = _profileFromSession(session);
-    final response = await _client
-        .from("profiles")
-        .upsert(profile.toProfileJson(), onConflict: "id")
-        .select()
-        .single();
-
-    return User.fromJson(Map<String, dynamic>.from(response));
+    // ponytail: offline returns session-derived profile (no avatar upsert);
+    // ceiling: profile row won't be created on first offline launch. Upgrade:
+    // queue a profile upsert op the same way logs are queued.
+    if (!_connectivity.isOnline) return profile;
+    try {
+      final response = await _client
+          .from("profiles")
+          .upsert(profile.toProfileJson(), onConflict: "id")
+          .select()
+          .single();
+      return User.fromJson(Map<String, dynamic>.from(response));
+    } catch (_) {
+      return profile;
+    }
   }
 
+  static const _networkTimeout = Duration(seconds: 8);
+
   Future<List<Repository>> fetchRepositories() async {
-    final userId = currentUserId;
-    if (userId == null) return const [];
-
-    final response = await _client
-        .from("repositories")
-        .select()
-        .eq("user_id", userId)
-        .order("created_at", ascending: false);
-
-    return _rows(response).map(Repository.fromJson).toList();
+    if (!_connectivity.isOnline) return _cache.readRepos();
+    try {
+      final repos = await _remote.fetchRepositories().timeout(_networkTimeout);
+      await _cache.writeRepos(repos);
+      return repos;
+    } catch (_) {
+      return _cache.readRepos();
+    }
   }
 
   Future<LogCounts> fetchLogCounts(String repoId) async {
-    final response = await _client
-        .from("engineering_logs")
-        .select("id,sync_status,github_issue_number,updated_at,created_at")
-        .eq("repo_id", repoId);
+    if (!_connectivity.isOnline) {
+      return _computeLogCounts(await _cache.readLogs(repoId));
+    }
+    try {
+      return await _remote.fetchLogCounts(repoId).timeout(_networkTimeout);
+    } catch (_) {
+      return _computeLogCounts(await _cache.readLogs(repoId));
+    }
+  }
 
-    final rows = _rows(response);
-    final synced = rows
-        .where(
-          (row) =>
-              SyncStatus.fromValue(row["sync_status"] as String?) !=
-              SyncStatus.local,
-        )
-        .length;
-
+  /// Mirrors SupabaseRemote.fetchLogCounts' field semantics exactly so
+  /// online and offline counts always agree.
+  LogCounts _computeLogCounts(List<EngineeringLog> logs) {
+    final synced =
+        logs.where((log) => log.syncStatus != SyncStatus.local).length;
     return LogCounts(
-      total: rows.length,
-      local: rows.length - synced,
+      total: logs.length,
+      local: logs.length - synced,
       synced: synced,
-      latestGithubSync: _latestGithubSync(
-        rows.map(EngineeringLog.fromJson).toList(growable: false),
-      ),
+      latestGithubSync: _latestGithubSync(logs),
     );
   }
 
-  Future<Repository> saveRepository(Repository repository) async {
-    final userId = currentUserId;
-    if (userId == null) {
-      throw const SupabaseServiceException("Login is required.");
+  DateTime? _latestGithubSync(List<EngineeringLog> logs) {
+    DateTime? latest;
+    for (final log in logs) {
+      if (log.githubIssueNumber == null) continue;
+      final syncedAt = log.updatedAt ?? log.createdAt;
+      if (syncedAt == null) continue;
+      if (latest == null || syncedAt.isAfter(latest)) latest = syncedAt;
     }
-
-    final response = await _client
-        .from("repositories")
-        .upsert(
-          repository.copyWith(userId: userId).toSupabaseJson(),
-          onConflict: "user_id,github_repo_id",
-        )
-        .select()
-        .single();
-
-    return Repository.fromJson(Map<String, dynamic>.from(response));
+    return latest;
   }
 
-  Future<Repository> markRepositorySynced(Repository repository) async {
-    final now = DateTime.now().toUtc();
-    if (repository.id == null) return repository.copyWith(lastSync: now);
+  Future<Repository> saveRepository(Repository repository) =>
+      _remote.saveRepository(repository);
 
-    final response = await _client
-        .from("repositories")
-        .update({"last_sync": now.toIso8601String()})
-        .eq("id", repository.id!)
-        .select()
-        .single();
+  Future<Repository> markRepositorySynced(Repository repository) =>
+      _remote.markRepositorySynced(repository);
 
-    return Repository.fromJson(Map<String, dynamic>.from(response));
-  }
-
-  Future<void> deleteRepository(Repository repository) async {
-    if (repository.id == null) return;
-    await _client.from("repositories").delete().eq("id", repository.id!);
-  }
+  Future<void> deleteRepository(Repository repository) =>
+      _remote.deleteRepository(repository);
 
   Future<List<EngineeringLog>> fetchEngineeringLogs(
     String repoId, {
     SyncStatus? status,
   }) async {
-    dynamic query = _client
-        .from("engineering_logs")
-        .select()
-        .eq("repo_id", repoId);
-
-    if (status == SyncStatus.synced) {
-      query = query.neq("sync_status", SyncStatus.local.value);
-    } else if (status != null) {
-      query = query.eq("sync_status", status.value);
+    if (!_connectivity.isOnline) {
+      final cached = await _cache.readLogs(repoId);
+      return _filter(cached, status);
     }
+    try {
+      // Always fetch the full set online so the cache holds everything;
+      // filtering happens client-side (also applied to cached reads).
+      final logs =
+          await _remote.fetchEngineeringLogs(repoId).timeout(_networkTimeout);
+      await _cache.writeLogs(repoId, logs);
+      return _filter(logs, status);
+    } catch (_) {
+      return _filter(await _cache.readLogs(repoId), status);
+    }
+  }
 
-    final response = await query.order("created_at", ascending: false);
-    return _rows(response).map(EngineeringLog.fromJson).toList();
+  List<EngineeringLog> _filter(List<EngineeringLog> logs, SyncStatus? status) {
+    if (status == null) return logs;
+    // ponytail: Open tab reuses SyncStatus.local as sentinel for "not closed";
+    // if we add a 4th status later, introduce a separate FilterMode enum.
+    if (status == SyncStatus.local) {
+      return logs.where((l) => l.syncStatus != SyncStatus.closed).toList();
+    }
+    return logs.where((l) => l.syncStatus == status).toList();
   }
 
   Future<EngineeringLog> createEngineeringLog(EngineeringLog log) async {
-    final response = await _client
-        .from("engineering_logs")
-        .insert(log.toSupabaseJson())
-        .select()
-        .single();
-
-    return EngineeringLog.fromJson(Map<String, dynamic>.from(response));
+    final withId = log.id == null ? log.copyWith(id: _uuid.v4()) : log;
+    await _cache.upsertLog(withId);
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.createLog,
+      payload: withId.toSupabaseJson(),
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
+    return withId;
   }
 
   Future<EngineeringLog> updateEngineeringLog(EngineeringLog log) async {
     if (log.id == null) {
       throw const SupabaseServiceException("Log must be saved first.");
     }
-
-    final response = await _client
-        .from("engineering_logs")
-        .update(log.toSupabaseJson())
-        .eq("id", log.id!)
-        .select()
-        .single();
-
-    return EngineeringLog.fromJson(Map<String, dynamic>.from(response));
+    await _cache.upsertLog(log);
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.updateLog,
+      payload: log.toSupabaseJson(),
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
+    return log;
   }
 
   Future<EngineeringLog> markLogSynced({
     required EngineeringLog log,
     required int githubIssueNumber,
-  }) async {
-    if (log.id == null) {
-      throw const SupabaseServiceException("Log must be saved before sync.");
-    }
+  }) => _remote.markLogSynced(log: log, githubIssueNumber: githubIssueNumber);
 
-    final response = await _client
-        .from("engineering_logs")
-        .update({
-          "sync_status": SyncStatus.synced.value,
-          "github_issue_number": githubIssueNumber,
-          "updated_at": DateTime.now().toUtc().toIso8601String(),
-        })
-        .eq("id", log.id!)
-        .select()
-        .single();
-
-    return EngineeringLog.fromJson(Map<String, dynamic>.from(response));
-  }
-
-  Future<EngineeringLog> markLogFinished(EngineeringLog log) async {
-    if (log.id == null) {
-      throw const SupabaseServiceException("Log must be saved first.");
-    }
-
-    final response = await _client
-        .from("engineering_logs")
-        .update({
-          "sync_status": SyncStatus.closed.value,
-          "updated_at": DateTime.now().toUtc().toIso8601String(),
-        })
-        .eq("id", log.id!)
-        .select()
-        .single();
-
-    return EngineeringLog.fromJson(Map<String, dynamic>.from(response));
-  }
+  Future<EngineeringLog> markLogFinished(EngineeringLog log) =>
+      _remote.markLogFinished(log);
 
   Future<void> deleteEngineeringLog(EngineeringLog log) async {
-    if (log.id == null) return;
-    await _client.from("engineering_logs").delete().eq("id", log.id!);
+    final id = log.id;
+    if (id == null) return;
+    await _cache.removeLog(log);
+    if (await _queue.hasPendingCreate(id)) {
+      // Never synced — cancel the queued create instead of enqueuing a
+      // delete that the remote has no row for.
+      await _queue.cancelCreateFor(id);
+      return;
+    }
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.deleteLog,
+      payload: {"id": id},
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
   }
 
   Future<Attachment> createAttachment(Attachment attachment) async {
-    final response = await _client
-        .from("attachments")
-        .insert(attachment.toSupabaseJson())
-        .select()
-        .single();
-
-    return Attachment.fromJson(Map<String, dynamic>.from(response));
+    final withId = attachment.id == null
+        ? Attachment(
+            id: _uuid.v4(),
+            logId: attachment.logId,
+            fileUrl: attachment.fileUrl,
+          )
+        : attachment;
+    await _cache.upsertAttachment(withId);
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.createAttachment,
+      payload: withId.toSupabaseJson(),
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
+    return withId;
   }
 
   Future<List<Attachment>> fetchAttachments(String logId) async {
-    final response = await _client
-        .from("attachments")
-        .select()
-        .eq("log_id", logId)
-        .order("created_at", ascending: false);
-
-    return _rows(response).map(Attachment.fromJson).toList();
+    if (!_connectivity.isOnline) return _cache.readAttachments(logId);
+    try {
+      final attachments =
+          await _remote.fetchAttachments(logId).timeout(_networkTimeout);
+      await _cache.writeAttachments(logId, attachments);
+      return attachments;
+    } catch (_) {
+      return _cache.readAttachments(logId);
+    }
   }
 
   Future<Attachment> uploadScreenshot({
     required String logId,
     required File file,
   }) async {
-    final path = "logs/$logId/${DateTime.now().microsecondsSinceEpoch}.png";
-    await _client.storage
-        .from("bughive")
-        .upload(
-          path,
-          file,
-          fileOptions: const supabase.FileOptions(upsert: true),
-        );
+    final attachmentId = _uuid.v4();
+    final localPath = await _persistPendingFile(file, attachmentId);
+    final attachment =
+        Attachment(id: attachmentId, logId: logId, fileUrl: localPath);
+    await _cache.upsertAttachment(attachment);
+    await _queue.enqueue(SyncOperation(
+      opId: _uuid.v4(),
+      type: SyncOpType.createAttachment,
+      payload: attachment.toSupabaseJson(),
+      localFilePath: localPath,
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _trySync();
+    return attachment;
+  }
 
-    final publicUrl = _client.storage.from("bughive").getPublicUrl(path);
-    return createAttachment(Attachment(logId: logId, fileUrl: publicUrl));
+  Future<String> _persistPendingFile(File file, String attachmentId) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final destDir = Directory("${dir.path}/pending_attachments");
+    if (!destDir.existsSync()) destDir.createSync(recursive: true);
+    final dest = "${destDir.path}/$attachmentId.png";
+    await file.copy(dest);
+    return dest;
   }
 
   User _profileFromSession(supabase.Session session) {
@@ -474,17 +527,6 @@ class SupabaseService {
       "avatar_url": avatarUrl?.toString(),
       "created_at": session.user.createdAt,
     });
-  }
-
-  DateTime? _latestGithubSync(List<EngineeringLog> logs) {
-    DateTime? latest;
-    for (final log in logs) {
-      if (log.githubIssueNumber == null) continue;
-      final syncedAt = log.updatedAt ?? log.createdAt;
-      if (syncedAt == null) continue;
-      if (latest == null || syncedAt.isAfter(latest)) latest = syncedAt;
-    }
-    return latest;
   }
 
   List<Map<String, dynamic>> _rows(dynamic response) {
