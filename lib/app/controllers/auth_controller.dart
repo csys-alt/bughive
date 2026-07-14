@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '/app/models/user.dart';
+import '/app/services/offline/offline_runtime.dart';
 import '/app/services/supabase_service.dart';
 import 'controller.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
@@ -36,6 +37,8 @@ class AuthController extends Controller {
       if (authState.session == null) return;
       try {
         await loadProfile();
+        final uid = _supabaseService.currentUserId;
+        if (uid != null) OfflineRuntime.instance.managerFor(uid).start();
         await onSignedIn();
       } catch (error) {
         onError?.call(error);
