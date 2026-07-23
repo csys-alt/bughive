@@ -10,9 +10,9 @@ environment:
 
 dependencies:
   google_fonts: ^8.1.0
-  analyzer: ^13.0.0
+  analyzer: ^10.0.1
   intl: ^0.20.2
-  nylo_framework: ^7.1.24
+  nylo_framework: ^7.1.23
   supabase_flutter: ^2.15.4
   cupertino_icons: ^1.0.9
   file_picker: ^12.0.0-beta.7
